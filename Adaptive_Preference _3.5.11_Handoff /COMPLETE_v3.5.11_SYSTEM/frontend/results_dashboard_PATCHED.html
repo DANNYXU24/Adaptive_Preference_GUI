@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Results Dashboard</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin:0; background:#fafafa; color:#222;}
+    .container { max-width: 1100px; margin: 0 auto; padding: 32px; }
+    h1 { margin: 0 0 6px 0; font-size: 28px; }
+    #expStatus { margin: 0 0 20px 0; color:#555;}
+    .card { background: #fff; border:1px solid #eee; border-radius: 12px; padding: 20px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+    .grid { display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:16px; margin: 20px 0;}
+    .metric { background:#fff; border:1px solid #eee; border-radius:10px; padding:14px; }
+    .metric .label { font-size:12px; text-transform:uppercase; letter-spacing: .04em; color:#666; }
+    .metric .value { font-size:24px; font-weight:700; }
+    .chart-container { position:relative; height: 50vh; }
+    /* ADD THIS STYLE */
+    .btn-download {
+        background: #48bb78;
+        color: white;
+        padding: 12px 20px;
+        border-radius: 8px;
+        text-decoration: none;
+        font-weight: 600;
+        transition: all 0.3s;
+    }
+    .btn-download:hover { background: #38a169; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1 id="expName">Loading Results...</h1>
+    <p id="expStatus"></p>
+    <div style="text-align: center; margin-bottom: 30px;">
+      <a id="downloadCsvBtn" class="btn-download" href="#" style="display:none;">Download Raw Data (CSV)</a>
+    </div>
+    <div class="grid">
+      <div class="metric"><div class="label">Total Sessions</div><div class="value" id="m_total_sessions">-</div></div>
+      <div class="metric"><div class="label">Completed</div><div class="value" id="m_completed">-</div></div>
+      <div class="metric"><div class="label">Active</div><div class="value" id="m_active">-</div></div>
+      <div class="metric"><div class="label">Total Choices</div><div class="value" id="m_choices">-</div></div>
+    </div>
+    <div class="card chart-container" id="chartArea">
+      <!-- Placeholder for future charts -->
+      <p>Charts coming soon.</p>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = 'http://localhost:5000/api';
+    async function loadResults() {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const experimentId = params.get('exp');
+        if (!experimentId) { document.getElementById('expName').innerText = 'No experiment specified'; return; }
+
+        // Set download link
+        const downloadBtn = document.getElementById('downloadCsvBtn');
+        downloadBtn.href = `${API_BASE}/experiments/${experimentId}/export_choices_csv`;
+        downloadBtn.style.display = 'inline-block';
+
+        const res = await fetch(`${API_BASE}/experiments/${experimentId}/results`, { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error('Failed to fetch results');
+        const data = await res.json();
+
+        document.getElementById('expName').innerText = data.experiment.name || 'Results';
+        document.getElementById('expStatus').innerText = `Status: ${data.experiment.status}`;
+        const s = data.summary;
+        document.getElementById('m_total_sessions').innerText = s.total_sessions;
+        document.getElementById('m_completed').innerText = s.completed_sessions;
+        document.getElementById('m_active').innerText = s.active_sessions;
+        document.getElementById('m_choices').innerText = s.total_choices;
+      } catch (e) {
+        document.getElementById('expStatus').innerText = e.message;
+      }
+    }
+    window.addEventListener('DOMContentLoaded', loadResults);
+  </script>
+<section style="margin:16px 0; display:flex; gap:12px; flex-wrap:wrap;">
+  <label>Date from: <input type="date" id="fromDate"></label>
+  <label>Date to: <input type="date" id="toDate"></label>
+  <label><input type="checkbox" id="onlyAttentionPassed"> Only attention-passed sessions</label>
+  <button id="applyFiltersBtn">Apply</button>
+</section>
+<div id="attentionSummary" style="margin:8px 0; font-weight:600"></div>
+<script>
+async function fetchAndRender(){
+  if (typeof window.renderAllResults === 'function'){ await window.renderAllResults(); }
+  const from = document.getElementById('fromDate').value;
+  const to = document.getElementById('toDate').value;
+  const onlyAttn = document.getElementById('onlyAttentionPassed').checked;
+  if (window.__results){
+    let filtered = window.__results;
+    if (from){ filtered = filtered.filter(r => new Date(r.completed_at||r.created_at) >= new Date(from));}
+    if (to){ filtered = filtered.filter(r => new Date(r.completed_at||r.created_at) <= new Date(to));}
+    if (onlyAttn){ filtered = filtered.filter(r => r.attention_check_passed === true); }
+    const total = filtered.length;
+    const attn = filtered.filter(r => r.attention_check_passed===true).length;
+    const rate = total? (attn/total*100).toFixed(1) : '0.0';
+    document.getElementById('attentionSummary').innerText = `Sessions: ${total} | Attention pass: ${attn} (${rate}%)`;
+    if (typeof window.renderWinrateChart === 'function'){ window.renderWinrateChart(filtered); }
+  }
+}
+document.getElementById('applyFiltersBtn').addEventListener('click', fetchAndRender);
+window.addEventListener('load', fetchAndRender);
+
+
+        // ===== ENHANCED DATA EXPORT (Admin QoL) =====
+        async function exportData(format = 'csv') {
+            const btn = event?.target;
+            if (btn) {
+                const original = btn.textContent;
+                btn.disabled = true;
+                btn.textContent = 'Exporting...';
+            }
+
+            try {
+                const params = new URLSearchParams(window.location.search);
+                const experimentId = params.get('exp');
+                
+                const response = await fetch(`${API_BASE}/experiments/${experimentId}/export_choices_csv`);
+                if (!response.ok) throw new Error('Export failed');
+                
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `experiment_${experimentId}_${Date.now()}.csv`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                window.URL.revokeObjectURL(url);
+                
+                if (typeof showToast === 'function') {
+                    showToast('Export Complete', 'File downloaded successfully', 'success');
+                }
+            } catch (error) {
+                console.error(error);
+                alert('Export failed: ' + error.message);
+            } finally {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = 'Download Raw Data (CSV)';
+                }
+            }
+        }
+
+        // Update download button to use function
+        window.addEventListener('DOMContentLoaded', () => {
+            const btn = document.getElementById('downloadCsvBtn');
+            if (btn) {
+                btn.onclick = (e) => { e.preventDefault(); exportData('csv'); };
+            }
+        });
+
+</script>
+</body>
+</html>
+
