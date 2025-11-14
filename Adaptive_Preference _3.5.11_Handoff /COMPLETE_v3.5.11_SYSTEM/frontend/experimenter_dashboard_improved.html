@@ -1194,6 +1194,7 @@
             <h1>Experimenter Dashboard</h1>
             <p>Create and manage your adaptive preference experiments</p>
             <button class="help-button" onclick="showHelp()">❓ Help</button>
+            <button type="button" onclick="devLogin()">Dev Login (researcher)</button>
         </div>
 
         <!-- Progress Stepper -->
@@ -2108,11 +2109,20 @@
                 status: 'draft'
             };
             
-            try {
-                // Create experiment
+        try {
+                // 1. Check login BEFORE calling fetch
+                if (!localStorage.getItem('jwt')) {
+                    alert('Please log in first (click "Dev Login (researcher)" at the top).');
+                    return;
+                }
+
+                // 2. Now call fetch once, with proper options
                 const expResponse = await fetch('http://localhost:5000/api/experiments', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: {
+                    'Content-Type': 'application/json',
+                    ...authHeader()
+                    },
                     body: JSON.stringify(experimentData)
                 });
                 
@@ -2206,7 +2216,33 @@
   </div>
 </section>
 <script>
-function authHeader(){ const t=localStorage.getItem('jwt'); return t? {'Authorization':'Bearer '+t} : {}; }
+function authHeader() {
+  const t = localStorage.getItem('jwt');
+  return t ? { 'Authorization': 'Bearer ' + t } : {};
+}
+
+async function devLogin() {
+  try {
+    const resp = await fetch('http://localhost:5000/api/auth/dev_issue_token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: 'researcher', sub: 'dev-user' })
+    });
+
+    const data = await resp.json();
+    if (!resp.ok) {
+      alert('Login failed: ' + (data.error || JSON.stringify(data)));
+      return;
+    }
+
+    localStorage.setItem('jwt', data.token);
+    alert('Logged in as ' + data.role);
+  } catch (err) {
+    console.error(err);
+    alert('Login error: ' + err.message);
+  }
+}
+
 async function uploadConsent(){
   const f=document.getElementById('consentFile').files[0]; if(!f){ alert('Pick a file'); return; }
   const fd=new FormData(); fd.append('file',f);
