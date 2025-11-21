@@ -2139,13 +2139,15 @@
                     
                     await fetch(`http://localhost:5000/api/experiments/${experimentId}/stimuli`, {
                         method: 'POST',
+                        headers: authHeader(),
                         body: formData
                     });
                 }
                 
                 // Publish experiment
                 const publishResponse = await fetch(`http://localhost:5000/api/experiments/${experimentId}/publish`, {
-                    method: 'POST'
+                    method: 'POST',
+                    headers: authHeader()
                 });
                 
                 if (!publishResponse.ok) throw new Error('Failed to publish');

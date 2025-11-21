@@ -539,18 +539,39 @@ def health_check():
 @require_roles(['admin', 'researcher'])
 def create_experiment():
     """Create new experiment."""
+    print("DEBUG: create_experiment() CALLED", flush=True)
     try:
-        data = request.get_json()
-        
+        data = request.get_json() or {}
+
         # Validate required fields
         required = ['name', 'num_stimuli', 'max_trials']
         for field in required:
             if field not in data:
                 return jsonify({'error': f'Missing required field: {field}'}), 400
-        
+
+        # --- NEW: get or create a dev user based on the JWT ---
+        payload = getattr(request, "user", {}) or {}
+        sub = payload.get("sub", "dev-user")
+        role = payload.get("role", "researcher")
+
+        # use sub as an email-ish identifier for dev
+        dev_email = f"{sub}@local" if "@" not in sub else sub
+        username = dev_email.split("@")[0]
+
+        user = User.query.filter_by(email=dev_email).first()
+        if not user:
+            user = User(
+                email=dev_email,
+                username=username,
+                role=role,
+            )
+            user.set_password("dev-password")
+            db.session.add(user)
+            db.session.flush()  # ensures user.user_id is available
+
         # Create experiment
         experiment = Experiment(
-            user_id=data.get('user_id', uuid.uuid4()),  # TODO: Get from auth
+            user_id=user.user_id,
             name=data['name'],
             description=data.get('description'),
             num_stimuli=data['num_stimuli'],
@@ -566,33 +587,26 @@ def create_experiment():
             completion_message=data.get('completion_message'),
             status='draft'
         )
-        
+
         db.session.add(experiment)
         db.session.commit()
-        
-        log_audit(
-            'experiment_created',
-            'experiment',
-            f'Created experiment: {experiment.name}',
-            {'experiment_id': str(experiment.experiment_id)},
-            user_id=experiment.user_id,
-            experiment_id=experiment.experiment_id
-        )
-        
+
+        logger.info(f"Experiment created: {experiment.experiment_id}")
+
         return jsonify({
             'success': True,
             'experiment': experiment.to_dict()
         }), 201
-        
+
     except IntegrityError as e:
         db.session.rollback()
         logger.error(f"Integrity error creating experiment: {e}")
         return jsonify({'error': 'Database integrity error'}), 400
+
     except Exception as e:
         db.session.rollback()
         logger.error(f"Error creating experiment: {e}")
         return jsonify({'error': str(e)}), 500
-
 
 @app.route('/api/experiments/<experiment_id>', methods=['GET'])
 def get_experiment(experiment_id):
