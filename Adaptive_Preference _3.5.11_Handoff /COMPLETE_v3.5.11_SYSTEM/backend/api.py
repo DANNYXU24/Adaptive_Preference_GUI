@@ -5,7 +5,7 @@ Database: PostgreSQL with proper SQL integration
 Framework: Flask with SQLAlchemy ORM
 """
 
-from flask import Flask, request, jsonify, send_file, Response
+from flask import Flask, request, jsonify, send_file, Response, send_from_directory
 import io
 import csv
 from flask_cors import CORS
@@ -444,8 +444,14 @@ def serialize_numpy(arr):
 
 
 def deserialize_numpy(data, shape, dtype=np.float64):
-    """Deserialize bytes to numpy array."""
-    return np.frombuffer(data, dtype=dtype).reshape(shape)
+    """Deserialize bytes to a *writeable* numpy array."""
+    if data is None:
+        # In case we ever call this before state is initialized
+        return np.zeros(shape, dtype=dtype)
+    
+    arr = np.frombuffer(data, dtype=dtype).reshape(shape)
+    # Copy so the result is writeable (np.frombuffer gives a read-only view)
+    return arr.copy()
 
 
 def _is_attention_stimulus(stimulus):
@@ -668,7 +674,7 @@ def upload_stimulus(experiment_id):
             experiment_id=experiment_id,
             stimulus_name=filename,
             file_path=file_path,
-            url=f'/uploads/{unique_filename}',
+            url=f'http://localhost:5000/uploads/{unique_filename}',
             file_size_bytes=file_size,
             mime_type=file.content_type,
             checksum_sha256=checksum
@@ -694,6 +700,12 @@ def upload_stimulus(experiment_id):
         db.session.rollback()
         logger.error(f"Error uploading stimulus: {e}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/uploads/<path:filename>')
+def serve_upload(filename):
+    """Serve uploaded stimulus files."""
+    upload_folder = app.config['UPLOAD_FOLDER']
+    return send_from_directory(upload_folder, filename)
 
 
 @app.route('/api/experiments/<experiment_id>/publish', methods=['POST'])

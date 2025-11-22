@@ -880,51 +880,57 @@
                 return;
             }
             
-            try {
-                // Check for break
-                if (shouldShowBreak()) {
-                    showBreak();
-                    return;
-                }
+                try {
+                    // Check for break
+                    if (shouldShowBreak()) {
+                        showBreak();
+                        return;
+                    }
 
-                // Get next pair
-                const response = await fetch(`${API_BASE}/sessions/${state.sessionToken}/next`);
-                const data = await response.json();
+                    // Get next pair from backend
+                    const response = await fetch(`${API_BASE}/sessions/${state.sessionToken}/next`);
+                    if (!response.ok) {
+                        throw new Error(`Failed to get next trial: HTTP ${response.status}`);
+                    }
+                    const data = await response.json();
 
-                if (data.complete || !data.stimulus_a) {
-                    showCompletion();
-                    return;
-                }
+                    if (data.complete || !data.stimulus_a || !data.stimulus_b) {
+                        showCompletion();
+                        return;
+                    }
 
-                // Update state
-                state.currentPair = {
-                    stimulusA: data.stimulus_a,
-                    stimulusB: data.stimulus_b
-                };
-                state.selectedChoice = null;
-                state.trialStartTime = Date.now();
+                    // 🔑 Store everything the backend sends, including pair_token
+                    state.currentPair = {
+                        stimulusA: data.stimulus_a,
+                        stimulusB: data.stimulus_b,
+                        pairToken: data.pair_token,                        // <-- important
+                        presentationOrder: data.presentation_order || 'AB' // <-- keep track of order
+                    };
+                    state.selectedChoice = null;
+                    state.trialStartTime = Date.now();
 
-                // Update UI
-                document.getElementById('imageA').src = data.stimulus_a.url;
-                document.getElementById('imageB').src = data.stimulus_b.url;
-                document.getElementById('imageA').alt = data.stimulus_a.stimulus_name;
-                document.getElementById('imageB').alt = data.stimulus_b.stimulus_name;
+                    // Update UI
+                    document.getElementById('imageA').src = state.currentPair.stimulusA.url;
+                    document.getElementById('imageB').src = state.currentPair.stimulusB.url;
+                    document.getElementById('imageA').alt = state.currentPair.stimulusA.stimulus_name;
+                    document.getElementById('imageB').alt = state.currentPair.stimulusB.stimulus_name;
 
-                // Reset selection
-                document.getElementById('stimulusA').classList.remove('selected');
-                document.getElementById('stimulusB').classList.remove('selected');
-                document.getElementById('confirmBtn').disabled = true;
+                    // Reset selection
+                    document.getElementById('stimulusA').classList.remove('selected');
+                    document.getElementById('stimulusB').classList.remove('selected');
+                    document.getElementById('confirmBtn').disabled = true;
 
-                // Update progress
-                updateProgress();
+                    // Update progress
+                    updateProgress();
 
-                // Show trial screen
-                showScreen('trial');
+                    // Show trial screen
+                    showScreen('trial');
 
             } catch (error) {
-                console.error('Error loading trial:', error);
-                showError('Failed to load next trial. Please refresh the page.');
-            }
+                    console.error('Error loading trial:', error);
+                    showError('Failed to load next trial. Please refresh the page.');
+                }
+
         }
 
         function selectStimulus(choice) {
@@ -1111,7 +1117,7 @@
 </div>
 <script>
 async function openConsent(){
-  try{ const r = await fetch('/api/consent'); const t = await r.text(); document.getElementById('consentContent').innerHTML=t; }catch(e){ document.getElementById('consentContent').innerText='Unable to load consent.'; }
+  try{ const r = await fetch('http://localhost:5000/api/consent'); const t = await r.text(); document.getElementById('consentContent').innerHTML=t; }catch(e){ document.getElementById('consentContent').innerText='Unable to load consent.'; }
   document.getElementById('consentModal').style.display='block';
 }
 
@@ -1259,28 +1265,37 @@ async function openConsent(){
             }
         }
 
-        // Override confirmChoice to use resilient networking
+        // Override confirmChoice to use resilient networking (with pair_token)
         const originalConfirmChoice = window.confirmChoice;
         window.confirmChoice = async function() {
             if (!state.selectedChoice) return;
 
+            // Demo mode: delegate to original simple handler
             if (window.demoMode) {
                 return originalConfirmChoice.call(this);
             }
 
+            if (!state.currentPair || !state.currentPair.pairToken) {
+                showToast('Error', 'No active trial token. Please refresh the page.', 'error');
+                return;
+            }
+
             const responseTime = Date.now() - state.trialStartTime;
-            const chosenStimulus = state.selectedChoice === 'A' ? 
-                state.currentPair.stimulusA : state.currentPair.stimulusB;
+            const chosenStimulus = state.selectedChoice === 'A'
+                ? state.currentPair.stimulusA
+                : state.currentPair.stimulusB;
 
             const choiceData = {
                 stimulus_a_id: state.currentPair.stimulusA.stimulus_id,
                 stimulus_b_id: state.currentPair.stimulusB.stimulus_id,
                 chosen_stimulus_id: chosenStimulus.stimulus_id,
                 response_time_ms: responseTime,
-                presentation_order: 'AB'
+                presentation_order: state.currentPair.presentationOrder || 'AB',
+                pair_token: state.currentPair.pairToken // 🔑 this is what the backend requires
             };
 
             const identifier = `choice_${state.trialsCompleted + 1}_${Date.now()}`;
+
             const result = await fetchWithRetry(
                 `${API_BASE}/sessions/${state.sessionToken}/choice`,
                 {
@@ -1291,6 +1306,7 @@ async function openConsent(){
                 identifier
             );
 
+            // Update client-side counts regardless of whether it was queued
             state.trialsCompleted++;
             state.choices.push({
                 trial: state.trialsCompleted,
@@ -1298,13 +1314,16 @@ async function openConsent(){
                 responseTime: responseTime
             });
 
+            // If it actually reached the server, update progress from server’s viewpoint
             if (result && !result.error && !result.queued) {
                 updateProgress();
             }
 
+            // If server says session complete
             if (result && result.complete) {
                 showCompletion();
             } else if (state.trialsCompleted >= state.totalTrials) {
+                // local safety check
                 showCompletion();
             } else if (shouldShowBreak()) {
                 showBreak();
@@ -1312,6 +1331,7 @@ async function openConsent(){
                 loadNextTrial();
             }
         };
+
 
         window.addEventListener('DOMContentLoaded', () => {
             try {

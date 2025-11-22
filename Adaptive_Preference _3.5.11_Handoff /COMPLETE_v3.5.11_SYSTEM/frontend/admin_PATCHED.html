@@ -127,7 +127,9 @@
     const API_BASE = 'http://localhost:5000/api';
     async function loadExperiments() {
       try {
-        const response = await fetch(`${API_BASE}/experiments/all`);
+        const response = await fetch(`${API_BASE}/experiments/all`, {
+          headers: authHeader()
+        });
         if (!response.ok) throw new Error('Failed to fetch experiments');
         const data = await response.json();
         const experiments = data.experiments || [];
