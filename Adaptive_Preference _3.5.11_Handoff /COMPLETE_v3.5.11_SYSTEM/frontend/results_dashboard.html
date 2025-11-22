@@ -49,6 +49,12 @@
 
   <script>
     const API_BASE = 'http://localhost:5000/api';
+
+    function authHeader() {
+      const t = localStorage.getItem('jwt');
+      return t ? { 'Authorization': 'Bearer ' + t } : {};
+    }
+
     async function loadResults() {
       try {
         const params = new URLSearchParams(window.location.search);
@@ -60,10 +66,12 @@
         downloadBtn.href = `${API_BASE}/experiments/${experimentId}/export_choices_csv`;
         downloadBtn.style.display = 'inline-block';
 
-        const res = await fetch(`${API_BASE}/experiments/${experimentId}/results`, { headers: { 'Accept': 'application/json' } });
+        const res = await fetch(`${API_BASE}/experiments/${experimentId}/results`, { headers: { 'Accept': 'application/json', ...authHeader() } });
         if (!res.ok) throw new Error('Failed to fetch results');
         const data = await res.json();
-
+        document.getElementById('downloadCsvBtn').addEventListener('click', async (e) => {
+          e.preventDefault();
+          await exportData('csv');});
         document.getElementById('expName').innerText = data.experiment.name || 'Results';
         document.getElementById('expStatus').innerText = `Status: ${data.experiment.status}`;
         const s = data.summary;
@@ -119,9 +127,8 @@ window.addEventListener('load', fetchAndRender);
                 const params = new URLSearchParams(window.location.search);
                 const experimentId = params.get('exp');
                 
-                const response = await fetch(`${API_BASE}/experiments/${experimentId}/export_choices_csv`);
-                if (!response.ok) throw new Error('Export failed');
-                
+                const response = await fetch(`${API_BASE}/experiments/${experimentId}/export_choices_csv`, {headers: { ...authHeader() }});                
+                  if (!response.ok) throw new Error('Export failed');
                 const blob = await response.blob();
                 const url = window.URL.createObjectURL(blob);
                 const a = document.createElement('a');

@@ -1250,8 +1250,13 @@ async function openConsent(){
                     const response = await fetch(request.url, request.options);
                     if (response.ok) {
                         showToast('Choice Sent', 'Queued response successfully recorded', 'success');
-                    } else {
+                    } else if (response.status >= 500) {
+                        // Only retry server/network errors
                         networkState.requestQueue.push(request);
+                    } else {
+                        // 4xx = permanent client error (bad token, old session, etc.) → drop
+                        const errText = await response.text().catch(() => '');
+                        console.warn('Dropping queued choice due to client error', response.status, errText);
                     }
                 } catch (error) {
                     networkState.requestQueue.push(request);
