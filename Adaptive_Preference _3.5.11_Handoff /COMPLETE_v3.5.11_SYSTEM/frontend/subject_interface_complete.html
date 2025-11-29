@@ -533,6 +533,7 @@
     </style>
 </head>
 <body>
+
     <!-- Skip to main content (WCAG 2.4.1) -->
     <a href="#main-content" class="skip-link">Skip to main content</a>
 
@@ -582,9 +583,16 @@
                     Your responses will help us understand visual preferences.
                 </div>
 
-                <div class="form-group">
-                    <label for="subjectIdInput">Please enter your Participant ID</label>
-                    <input type="text" id="subjectIdInput" placeholder="e.g., P101">
+                <div class="form-group" id="subjectIdGroup">
+                    <label>Your Participant ID</label>
+                    <div
+                        id="subjectIdDisplay"
+                        style="padding:8px 10px;border-radius:8px;background:#0b1020;border:1px solid #2a3359;display:inline-block;min-width:120px;">
+                        <!-- Filled automatically from the URL by the researcher (e.g., ?sub=EXP1-S001) -->
+                    </div>
+                    <p style="font-size: 13px; color: #a0aec0; margin-top: 6px;">
+                        The researcher will assign this ID; please confirm it matches the one you were given.
+                    </p>
                 </div>
             </div>
             
@@ -692,6 +700,7 @@
         const state = {
             sessionToken: null,
             experimentConfig: null,
+            subjectId: null,
             currentTrial: 0,
             trialsCompleted: 0,
             totalTrials: 0,
@@ -702,6 +711,7 @@
             choices: [],
             sessionStartTime: null
         };
+
 
         // ===== API CONFIGURATION =====
         const API_BASE = 'http://localhost:5000/api';
@@ -756,6 +766,23 @@
             if (urlParams.get('demo') === 'true') {
                 runDemoMode(urlParams);
                 return;
+            }
+
+            // Read participant ID from URL (e.g., ?sub=EXP1-S001)
+            const subjectParam = urlParams.get('sub');
+            if (subjectParam) {
+                state.subjectId = subjectParam;
+                const displayEl = document.getElementById('subjectIdDisplay');
+                if (displayEl) {
+                    displayEl.textContent = subjectParam;
+                }
+            } else {
+                state.subjectId = null;
+                const groupEl = document.getElementById('subjectIdGroup');
+                if (groupEl) {
+                    // Hide the whole block if no ID is provided in the URL
+                    groupEl.style.display = 'none';
+                }
             }
             
             try {
@@ -812,26 +839,34 @@
                 loadNextTrial();
                 return;
             }
-            
-            // Get Subject ID
-            const subjectId = document.getElementById('subjectIdInput').value || 'anonymous';
-            // Disable button
-            document.querySelector('#screen-instructions .btn-primary').disabled = true;
-            document.querySelector('#screen-instructions .btn-primary').textContent = 'Loading...';
+
+            // Use subject ID determined from URL (?sub=...) during initialize()
+            const subjectId = state.subjectId;
+
+            // Disable button while we create the session
+            const startBtn = document.querySelector('#screen-instructions .btn-primary');
+            if (startBtn) {
+                startBtn.disabled = true;
+                startBtn.textContent = 'Loading...';
+            }
 
             try {
+                const payload = {
+                    experiment_id: state.experimentConfig.experiment_id,
+                    browser_info: {
+                        userAgent: navigator.userAgent,
+                        screen: `${screen.width}x${screen.height}`,
+                        language: navigator.language
+                    }
+                };
+                if (subjectId) {
+                    payload.subject_id = subjectId;
+                }
+
                 const sessionResponse = await fetch(`${API_BASE}/sessions`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        experiment_id: state.experimentConfig.experiment_id,
-                        subject_id: subjectId,
-                        browser_info: {
-                            userAgent: navigator.userAgent,
-                            screen: `${screen.width}x${screen.height}`,
-                            language: navigator.language
-                        }
-                    })
+                    body: JSON.stringify(payload)
                 });
                 if (!sessionResponse.ok) throw new Error('Failed to create session');
 
@@ -843,10 +878,13 @@
             } catch (error) {
                 console.error('Error starting experiment:', error);
                 showError('Failed to start the experiment session. Please refresh.');
-                document.querySelector('#screen-instructions .btn-primary').disabled = false;
-                document.querySelector('#screen-instructions .btn-primary').textContent = 'Begin Study';
+                if (startBtn) {
+                    startBtn.disabled = false;
+                    startBtn.textContent = 'Begin Study';
+                }
             }
         }
+
 
         async function loadNextTrial() {
             // Handle demo mode

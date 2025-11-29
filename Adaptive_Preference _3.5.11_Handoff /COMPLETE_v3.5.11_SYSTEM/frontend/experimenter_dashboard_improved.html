@@ -6,6 +6,34 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Experimenter Dashboard - Adaptive Preference Testing</title>
     <style>
+
+        .top-nav {
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            padding:12px 24px;
+            padding-bottom: 20px;
+        }
+        .nav-logo {
+            font-weight:700;
+            letter-spacing:0.05em;
+            color:#e8ecff;
+        }
+        .nav-links a {
+            margin:0 8px;
+            color:#e8ecff;
+            text-decoration:none;
+            font-size:14px;
+        }
+        .nav-links a:hover,
+        .nav-links a:focus {
+            text-decoration:underline;
+        }
+        .nav-right .btn {
+            padding:8px 12px;
+            border-radius:999px;
+        }
+
         /* ===== RESET & BASE ===== */
         * {
             margin: 0;
@@ -14,7 +42,7 @@
         }
 
         :root {
-            --primary: #667eea;
+            --primary: rgb(102, 126, 234);
             --primary-dark: #5568d3;
             --secondary: #764ba2;
             --success: #48bb78;
@@ -28,6 +56,7 @@
             --gray-700: #374151;
             --gray-900: #111827;
         }
+
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
@@ -1175,7 +1204,21 @@
         }
     </style>
 </head>
+
 <body>
+    <header class="top-nav">
+            <div class="nav-left">
+            <span class="nav-logo">Adaptive Preference</span>
+            </div>
+            <nav class="nav-links" aria-label="Main navigation">
+            <a href="admin_PATCHED.html">Admin Home</a>
+            <a href="experimenter_dashboard_improved.html">Experiment Builder</a>
+            <a href="stimulus_library.html">Stimulus Library</a>
+            </nav>
+            <div class="nav-right">
+            </div>
+        </header>
+
     <!-- First Time Banner -->
     <div class="first-time-banner" id="firstTimeBanner">
         <h2>👋 Welcome! First time creating an adaptive preference experiment?</h2>
@@ -1189,12 +1232,12 @@
 
     <!-- Main Container -->
     <div class="container">
+        
         <!-- Header -->
         <div class="header">
             <h1>Experimenter Dashboard</h1>
             <p>Create and manage your adaptive preference experiments</p>
             <button class="help-button" onclick="showHelp()">❓ Help</button>
-            <button type="button" onclick="devLogin()">Dev Login (researcher)</button>
         </div>
 
         <!-- Progress Stepper -->
@@ -1546,16 +1589,58 @@
             wizardAnswers: {}
         };
 
+        // Single source of truth for the experiment being edited (if any)
+        const urlParams = new URLSearchParams(window.location.search);
+        const existingExperimentId = urlParams.get('experiment_id') || null;
+
         // ===== INITIALIZATION =====
-        window.addEventListener('DOMContentLoaded', () => {
-            // Check if first time
+        window.addEventListener('DOMContentLoaded', async () => {
+            // First-time banner
             const isFirstTime = !localStorage.getItem('hasVisited');
             if (!isFirstTime) {
                 document.getElementById('firstTimeBanner').style.display = 'none';
             }
-            
+
             updateProgress();
+            updateStepIndicators();
             setupDragAndDrop();
+
+            // If we’re editing an existing experiment, preload its settings
+            if (existingExperimentId) {
+                try {
+                    const resp = await fetch(`http://localhost:5000/api/experiments/${existingExperimentId}`, {
+                        headers: { 
+                          ...authHeader(),
+                          'Content-Type': 'application/json'
+                        }
+                    });
+                    if (!resp.ok) throw new Error('Failed to load experiment');
+                    const data = await resp.json();
+                    const exp = data.experiment;
+
+                    // Populate basic fields
+                    document.getElementById('expName').value = exp.name || '';
+
+                    const trialsSlider = document.getElementById('trialsSlider');
+                    if (trialsSlider) {
+                        trialsSlider.value = exp.max_trials || 40;
+                        state.experimentData.numTrials = exp.max_trials || 40;
+                        updateTrialsValue();
+                    }
+
+                    document.getElementById('showProgress').checked = !!exp.show_progress;
+                    document.getElementById('counterbalance').checked = !!exp.enable_counterbalancing;
+                    document.getElementById('breakInterval').value = exp.break_interval ?? 20;
+                    document.getElementById('instructions').value = exp.instructions || '';
+                    document.getElementById('completionMessage').value = exp.completion_message || '';
+
+                    // NOTE: we’re not auto-loading existing stimuli into the uploader yet.
+                    // The experiment will still use whatever stimuli are already in the DB.
+                } catch (err) {
+                    console.error(err);
+                    alert('Error loading experiment for editing: ' + err.message);
+                }
+            }
         });
 
         // ===== BANNER FUNCTIONS =====
@@ -2116,7 +2201,20 @@
                     return;
                 }
 
-                // 2. Now call fetch once, with proper options
+             let experimentId = existingExperimentId;
+
+            if (experimentId) {
+                const resp = await fetch(`http://localhost:5000/api/experiments/${experimentId}`, {
+                    method: 'PUT',
+                    headers: {
+                    'Content-Type': 'application/json',
+                    ...authHeader()
+                    },
+                    body: JSON.stringify(experimentData)
+                });
+                if (!resp.ok) throw new Error('Failed to update experiment');
+                await resp.json();
+                } else {
                 const expResponse = await fetch('http://localhost:5000/api/experiments', {
                     method: 'POST',
                     headers: {
@@ -2125,12 +2223,11 @@
                     },
                     body: JSON.stringify(experimentData)
                 });
-                
                 if (!expResponse.ok) throw new Error('Failed to create experiment');
-                
                 const expData = await expResponse.json();
-                const experimentId = expData.experiment.experiment_id;
-                
+                experimentId = expData.experiment.experiment_id;
+                }
+
                 // Upload stimuli
                 for (let i = 0; i < state.experimentData.images.length; i++) {
                     const file = state.experimentData.images[i];
@@ -2196,68 +2293,13 @@
             alert('Help system would open here, with:\n- Video tutorials\n- Step-by-step guide\n- FAQ\n- Contact support');
         }
 
-        // Initialize on page load
-        updateStepIndicators();
     </script>
 
-<section style="margin-top:24px; padding:12px; border:1px solid #ddd; border-radius:8px;">
-  <h2>Consent & Debrief</h2>
-  <p>Upload your IRB-approved consent and debrief documents (HTML or PDF). The participant page will display the current consent.</p>
-  <div style="display:flex; gap:16px; flex-wrap:wrap;">
-    <form onsubmit="return false;">
-      <label>Consent: <input type="file" id="consentFile"></label>
-      <button onclick="uploadConsent()">Upload</button>
-    </form>
-    <form onsubmit="return false;">
-      <label>Debrief: <input type="file" id="debriefFile"></label>
-      <button onclick="uploadDebrief()">Upload</button>
-    </form>
-  </div>
-  <div style="margin-top:8px">
-    <a href="/api/consent" target="_blank">Preview consent</a> • <a href="/api/debrief" target="_blank">Preview debrief</a>
-  </div>
-</section>
 <script>
 function authHeader() {
   const t = localStorage.getItem('jwt');
   return t ? { 'Authorization': 'Bearer ' + t } : {};
 }
-
-async function devLogin() {
-  try {
-    const resp = await fetch('http://localhost:5000/api/auth/dev_issue_token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ role: 'researcher', sub: 'dev-user' })
-    });
-
-    const data = await resp.json();
-    if (!resp.ok) {
-      alert('Login failed: ' + (data.error || JSON.stringify(data)));
-      return;
-    }
-
-    localStorage.setItem('jwt', data.token);
-    alert('Logged in as ' + data.role);
-  } catch (err) {
-    console.error(err);
-    alert('Login error: ' + err.message);
-  }
-}
-
-async function uploadConsent(){
-  const f=document.getElementById('consentFile').files[0]; if(!f){ alert('Pick a file'); return; }
-  const fd=new FormData(); fd.append('file',f);
-  const r=await fetch('/api/admin/upload_consent',{method:'POST',headers:authHeader(),body:fd});
-  const d=await r.json(); if(!r.ok){ alert('Upload failed: '+JSON.stringify(d)); } else { alert('Consent uploaded.'); }
-}
-async function uploadDebrief(){
-  const f=document.getElementById('debriefFile').files[0]; if(!f){ alert('Pick a file'); return; }
-  const fd=new FormData(); fd.append('file',f);
-  const r=await fetch('/api/admin/upload_debrief',{method:'POST',headers:authHeader(),body:fd});
-  const d=await r.json(); if(!r.ok){ alert('Upload failed: '+JSON.stringify(d)); } else { alert('Debrief uploaded.'); }
-}
-
 
         // ===== HELP-INTENSIVE DESIGN SYSTEM =====
         const helpContent = {

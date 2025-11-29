@@ -24,6 +24,7 @@ import logging
 from functools import wraps
 import hashlib
 import base64
+import re
 
 # Import auth functions - consolidated import
 try:
@@ -37,7 +38,10 @@ except ImportError:
 # ============================================================================
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": os.environ.get('ALLOWED_ORIGINS','http://localhost:3000').split(',')}})
+CORS(app, resources={
+    r"/api/*": {
+        "origins": os.environ.get('ALLOWED_ORIGINS','http://localhost:3000').split(','),
+        "expose_headers": ["Content-Disposition"]}})
 
 # Database configuration - FIXED: Proper error handling
 database_url = os.environ.get('DATABASE_URL')
@@ -243,6 +247,287 @@ class Experiment(db.Model):
         return data
 
 
+# ============================
+# Stimulus Library API
+# ============================
+
+@app.route('/api/stimuli', methods=['GET'])
+@require_auth
+@require_roles(['admin', 'researcher'])
+def list_stimuli():
+    """List stimuli for the Stimulus Library view.
+
+    Optional query param:
+      - experiment_id: if supplied, restrict to that experiment only.
+    """
+    try:
+        experiment_id = request.args.get('experiment_id')
+        query = Stimulus.query
+        if experiment_id:
+            query = query.filter_by(experiment_id=experiment_id)
+
+        # Order by upload time so newest are last
+        stimuli = query.order_by(Stimulus.uploaded_at.asc()).all()
+
+        return jsonify({'stimuli': [s.to_dict() for s in stimuli]})
+    except Exception as e:
+        logger.error(f"Error listing stimuli: {e}")
+        return jsonify({'error': 'Failed to list stimuli'}), 500
+
+
+@app.route('/api/stimuli/upload', methods=['POST'])
+@require_auth
+@require_roles(['admin', 'researcher'])
+def upload_stimulus_library():
+    """Upload a stimulus image for use in the library.
+
+    This mirrors the existing /api/experiments/<experiment_id>/stimuli
+    but uses a global /api/stimuli/upload entry-point.
+
+    It EXPECTS an experiment_id in the form-data or query string.
+    """
+    try:
+        # IMPORTANT: we still need to know which experiment this belongs to
+        experiment_id = request.form.get('experiment_id') or request.args.get('experiment_id')
+        if not experiment_id:
+            return jsonify({'error': 'experiment_id is required to upload a stimulus'}), 400
+
+        # Confirm the experiment exists
+        experiment = Experiment.query.filter_by(experiment_id=experiment_id).first()
+        if not experiment:
+            return jsonify({'error': 'Experiment not found'}), 404
+
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file provided'}), 400
+
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'error': 'No file selected'}), 400
+
+        if not allowed_file(file.filename):
+            return jsonify({'error': 'Invalid file type'}), 400
+
+        filename = secure_filename(file.filename)
+        unique_filename = f"{uuid.uuid4()}_{filename}"
+
+        upload_folder = app.config['UPLOAD_FOLDER']
+        os.makedirs(upload_folder, exist_ok=True)
+        file_path = os.path.join(upload_folder, unique_filename)
+        file.save(file_path)
+
+        checksum = calculate_file_checksum(file_path)
+        file_size = os.path.getsize(file_path)
+
+        stimulus = Stimulus(
+            experiment_id=experiment_id,
+            stimulus_name=filename,
+            file_path=file_path,
+            url=f"http://localhost:5000/uploads/{unique_filename}",
+            file_size_bytes=file_size,
+            mime_type=file.content_type,
+            checksum_sha256=checksum,
+        )
+
+        db.session.add(stimulus)
+        db.session.commit()
+
+        log_audit(
+            'stimulus_uploaded',
+            'data',
+            f'Uploaded stimulus via /api/stimuli/upload: {filename}',
+            {'stimulus_id': str(stimulus.stimulus_id), 'file_size': file_size},
+            experiment_id=experiment_id
+        )
+
+        return jsonify({'stimulus': stimulus.to_dict()}), 201
+
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error uploading stimulus via /api/stimuli/upload: {e}")
+        return jsonify({'error': 'Failed to upload stimulus'}), 500
+
+
+@app.route('/api/stimuli/<stimulus_id>', methods=['PUT'])
+@require_auth
+@require_roles(['admin', 'researcher'])
+def update_stimulus_metadata(stimulus_id):
+    """Update metadata (room_type, curvature, brightness, hue, tags) for a stimulus."""
+    try:
+        stimulus = Stimulus.query.filter_by(stimulus_id=stimulus_id).first()
+        if not stimulus:
+            return jsonify({'error': 'Stimulus not found'}), 404
+
+        data = request.get_json() or {}
+
+        # Update JSON metadata blob
+        meta = dict(stimulus.stimulus_metadata or {})
+        if 'room_type' in data:
+            meta['room_type'] = data['room_type'] or None
+        if 'curvature_level' in data:
+            meta['curvature_level'] = data['curvature_level'] or None
+        if 'brightness' in data:
+            meta['brightness'] = data['brightness'] or None
+        if 'hue' in data:
+            meta['hue'] = data['hue'] or None
+        stimulus.stimulus_metadata = meta
+
+        # Update tags ARRAY column
+        tags = data.get('tags')
+        if tags is not None:
+            cleaned = [str(t).strip() for t in tags if str(t).strip()]
+            stimulus.tags = cleaned or None
+
+        db.session.commit()
+        return jsonify(stimulus.to_dict())
+
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error updating stimulus metadata: {e}")
+        return jsonify({'error': 'Failed to update stimulus'}), 500
+
+
+@app.route('/api/stimuli/<stimulus_id>/auto_tag', methods=['POST'])
+@require_auth
+@require_roles(['admin', 'researcher'])
+def auto_tag_stimulus(stimulus_id):
+    """Auto-generate tags for a stimulus.
+
+    For now this is a stub that inspects the filename/metadata.
+    Later you can replace this with a call into your image tagger / BN.
+    """
+    try:
+        stimulus = Stimulus.query.filter_by(stimulus_id=stimulus_id).first()
+        if not stimulus:
+            return jsonify({'error': 'Stimulus not found'}), 404
+
+        existing_tags = set(stimulus.tags or [])
+        name = (stimulus.stimulus_name or '').lower()
+        meta = stimulus.stimulus_metadata or {}
+
+        # Naive heuristic rules – placeholder
+        if 'curve' in name or 'arched' in name:
+            existing_tags.add('curved')
+        if 'blue' in name or meta.get('hue') == 'cool':
+            existing_tags.add('blue')
+        if meta.get('brightness') == 'bright':
+            existing_tags.add('bright')
+        if meta.get('brightness') == 'dark':
+            existing_tags.add('dark')
+
+        if not existing_tags:
+            existing_tags.add('candidate')
+
+        stimulus.tags = sorted(existing_tags)
+        db.session.commit()
+
+        return jsonify({'tags': stimulus.tags})
+
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error auto-tagging stimulus: {e}")
+        return jsonify({'error': 'Failed to auto-tag stimulus'}), 500
+
+@app.route('/api/experiments/<experiment_id>/archive', methods=['POST'])
+@require_auth
+@require_roles(['admin', 'researcher'])
+def archive_experiment(experiment_id):
+    """Soft-archive an experiment: hide from active lists but keep all data."""
+    try:
+        exp = Experiment.query.filter_by(experiment_id=experiment_id).first()
+        if not exp:
+            return jsonify({'error': 'Experiment not found'}), 404
+
+        # Flip status and set archived_at
+        exp.status = 'archived'
+        exp.archived_at = datetime.utcnow()
+        db.session.commit()
+
+        log_audit(
+            'experiment_archived',
+            'experiment',
+            f'Archived experiment: {exp.name}',
+            {'experiment_id': str(exp.experiment_id)},
+            experiment_id=exp.experiment_id
+        )
+
+        return jsonify({'success': True})
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error archiving experiment: {e}")
+        return jsonify({'error': 'Failed to archive experiment'}), 500
+
+@app.route('/api/experiments/<experiment_id>', methods=['DELETE'])
+@require_auth
+@require_roles(['admin'])
+def delete_experiment(experiment_id):
+    """
+    Delete an experiment.
+
+    Query param:
+      - delete_data=1 → delete experiment AND all sessions / choices / stimuli / algorithm_state.
+      - delete_data=0 or omitted → only delete experiment row IF there are no sessions; otherwise 400.
+    """
+    delete_data_flag = request.args.get('delete_data', '0')
+    delete_data = delete_data_flag in ('1', 'true', 'True', 'yes')
+
+    try:
+        exp = Experiment.query.filter_by(experiment_id=experiment_id).first()
+        if not exp:
+            return jsonify({'error': 'Experiment not found'}), 404
+
+        # Gather session IDs
+        session_ids = [s.session_id for s in exp.sessions]
+
+        if not delete_data and session_ids:
+            # We cannot safely drop just the experiment row and keep orphaned sessions,
+            # because of non-nullable FK constraints.
+            return jsonify({
+                'error': 'Experiment has existing sessions; delete_data=1 is required to delete it. '
+                         'Use /api/experiments/<id>/archive to hide it instead.'
+            }), 400
+
+        # If delete_data is true, remove dependent rows in a safe order
+        if delete_data and session_ids:
+            # Choices depend on sessions
+            Choice.query.filter(Choice.session_id.in_(session_ids)) \
+                        .delete(synchronize_session=False)
+
+            # AlgorithmState also depends on sessions
+            AlgorithmState.query.filter(AlgorithmState.session_id.in_(session_ids)) \
+                                .delete(synchronize_session=False)
+
+            # Sessions themselves
+            Session.query.filter(Session.session_id.in_(session_ids)) \
+                         .delete(synchronize_session=False)
+
+        # Stimuli belong to experiment; safe to remove now
+        Stimulus.query.filter_by(experiment_id=experiment_id) \
+                      .delete(synchronize_session=False)
+
+        # Optional: also cull audit log rows tied to this experiment
+        AuditLog.query.filter_by(experiment_id=experiment_id) \
+                      .delete(synchronize_session=False)
+
+        # Finally delete the experiment record
+        db.session.delete(exp)
+        db.session.commit()
+
+        log_audit(
+            'experiment_deleted',
+            'experiment',
+            f'Deleted experiment: {exp.name}',
+            {'experiment_id': experiment_id, 'delete_data': delete_data},
+            experiment_id=experiment_id,
+            severity='warning'
+        )
+
+        return jsonify({'success': True, 'delete_data': delete_data})
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error deleting experiment: {e}")
+        return jsonify({'error': f'Failed to delete experiment: {e}'}), 500
+
+
 class Stimulus(db.Model):
     __tablename__ = 'stimuli'
     
@@ -266,15 +551,26 @@ class Stimulus(db.Model):
     experiment = db.relationship('Experiment', back_populates='stimuli')
     
     def to_dict(self):
+        meta = self.stimulus_metadata or {}
         return {
             'stimulus_id': str(self.stimulus_id),
             'stimulus_name': self.stimulus_name,
+            # alias for GUI code that expects `filename`
+            'filename': self.stimulus_name,
             'url': self.url,
             'file_size_bytes': self.file_size_bytes,
             'mime_type': self.mime_type,
             'width_px': self.width_px,
-            'height_px': self.height_px
+            'height_px': self.height_px,
+            # Flattened metadata fields for the Stimulus Library UI
+            'room_type': meta.get('room_type'),
+            'curvature_level': meta.get('curvature_level'),
+            'brightness': meta.get('brightness'),
+            'hue': meta.get('hue'),
+            # Tags are stored in the ARRAY column but exposed as a list
+            'tags': self.tags or [],
         }
+
 
 
 class Session(db.Model):
@@ -315,6 +611,8 @@ class Session(db.Model):
         return {
             'session_id': str(self.session_id),
             'session_token': self.session_token,
+            'experiment_id': str(self.experiment_id),
+            'subject_id': self.subject_id,
             'status': self.status,
             'trials_completed': self.trials_completed,
             'trials_total': self.trials_total,
@@ -322,8 +620,10 @@ class Session(db.Model):
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'started_at': self.started_at.isoformat() if self.started_at else None,
             'completed_at': self.completed_at.isoformat() if self.completed_at else None,
-            'total_time_seconds': self.total_time_seconds
+            'total_time_seconds': self.total_time_seconds,
+            'attention_check_passed': self.attention_check_passed,
         }
+
 
 
 class AlgorithmState(db.Model):
@@ -545,6 +845,7 @@ def health_check():
 @require_roles(['admin', 'researcher'])
 def create_experiment():
     """Create new experiment."""
+    data = request.get_json()
     print("DEBUG: create_experiment() CALLED", flush=True)
     try:
         data = request.get_json() or {}
@@ -631,6 +932,34 @@ def get_experiment(experiment_id):
     except Exception as e:
         logger.error(f"Error getting experiment: {e}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/experiments/<experiment_id>', methods=['PUT'])
+@require_auth
+def update_experiment(experiment_id):
+    data = request.get_json() or {}
+
+    exp = Experiment.query.filter_by(experiment_id=experiment_id).first()
+    if not exp:
+        return jsonify({'error': 'Experiment not found'}), 404
+
+    # Update only the fields you actually use in the GUI
+    exp.name = data.get('name', exp.name)
+    exp.description = data.get('description', exp.description)
+    exp.max_trials = data.get('max_trials', exp.max_trials)
+    exp.min_trials = data.get('min_trials', exp.min_trials)
+    exp.show_progress = data.get('show_progress', exp.show_progress)
+    exp.break_interval = data.get('break_interval', exp.break_interval)
+    exp.instructions = data.get('instructions', exp.instructions)
+    exp.completion_message = data.get('completion_message', exp.completion_message)
+
+    # If you’re storing extra config in metadata:
+    meta = exp.experiment_metadata or {}
+    new_meta = data.get('experiment_metadata') or {}
+    meta.update(new_meta)
+    exp.experiment_metadata = meta
+
+    db.session.commit()
+    return jsonify({'experiment': exp.to_dict()})
 
 
 @app.route('/api/experiments/<experiment_id>/stimuli', methods=['POST'])
@@ -742,7 +1071,7 @@ def publish_experiment(experiment_id):
         return jsonify({
             'success': True,
             'experiment': experiment.to_dict(),
-            'subject_url': f'/subject?exp={experiment_id}'
+            'subject_url': f'/frontend/subject_interface_complete.html?exp={experiment_id}'
         })
         
     except Exception as e:
@@ -1093,6 +1422,7 @@ def get_all_experiments():
             Experiment,
             db.func.count(Session.session_id).label('session_count')
         ).outerjoin(Session, Experiment.experiment_id == Session.experiment_id)\
+         .filter(Experiment.archived_at.is_(None)) \
          .group_by(Experiment.experiment_id).order_by(Experiment.created_at.desc()).all()
 
         results = []
@@ -1155,15 +1485,124 @@ def export_choices_csv(experiment_id):
                 choice.presentation_order
             ])
 
+        # Use experiment name as base for filename
+        base_name = experiment.name or f"experiment_{experiment_id[:8]}"
+        # slugify: keep only letters, numbers, underscores, dashes
+        safe_name = re.sub(r'[^A-Za-z0-9_\-]+', '_', base_name).strip('_')
+
+        filename = f"{safe_name}_choices_raw.csv"
+
         return Response(
             output.getvalue(),
             mimetype='text/csv',
             headers={
-                "Content-Disposition": f"attachment;filename=experiment_{experiment_id}_choices.csv"
+                "Content-Disposition": f'attachment; filename="{filename}"'
             }
         )
     except Exception as e:
         logger.error(f"Error exporting CSV: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/experiments/<experiment_id>/export_clean_choices_csv', methods=['GET'])
+@require_auth
+@require_roles(['admin', 'researcher'])
+def export_clean_choices_csv(experiment_id):
+    """Export a cleaned CSV with human-readable session and stimulus labels."""
+    try:
+        experiment = Experiment.query.filter_by(experiment_id=experiment_id).first()
+        if not experiment:
+            return jsonify({'error': 'Experiment not found'}), 404
+
+        # Sessions ordered by creation time
+        sessions = Session.query.filter_by(experiment_id=experiment_id) \
+                                .order_by(Session.created_at.asc()).all()
+        if not sessions:
+            return jsonify({'error': 'No sessions found for this experiment'}), 404
+
+        session_index = {s.session_id: idx + 1 for idx, s in enumerate(sessions)}
+
+        # All stimuli for this experiment
+        stimuli = Stimulus.query.filter_by(experiment_id=experiment_id).all()
+        stim_by_id = {s.stimulus_id: s for s in stimuli}
+
+        # All choices
+        session_ids = [s.session_id for s in sessions]
+        choices = Choice.query.filter(Choice.session_id.in_(session_ids)) \
+                              .order_by(Choice.session_id, Choice.trial_number).all()
+        if not choices:
+            return jsonify({'error': 'No choices found for this experiment'}), 404
+
+        # Helper to build simple session IDs
+        base_code = (experiment.name or "EXP").upper()
+        base_code = "".join(ch for ch in base_code if ch.isalnum())[:4] or "EXP"
+
+        def simple_session_id(sess):
+            idx = session_index.get(sess.session_id, 0)
+            return f"{base_code}-S{idx:03d}"
+        
+        # Build CSV in-memory
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        # Header
+        writer.writerow([
+            'session_id',            
+            'subject_id',
+            'trial_number',
+            'stimulus_a_name',
+            'stimulus_b_name',
+            'chosen_stimulus_name',
+            'response_time_ms',
+            'elapsed_ms_from_start',  
+            'presentation_order',
+            'chosen_side'
+        ])
+        
+        # Rows
+        for choice in choices:
+            sess = choice.session
+            s_a = stim_by_id.get(choice.stimulus_a_id)
+            s_b = stim_by_id.get(choice.stimulus_b_id)
+            s_c = stim_by_id.get(choice.chosen_stimulus_id)
+
+            # Use started_at if available, else fall back to created_at
+            start_time = sess.started_at or sess.created_at
+            if choice.timestamp and start_time:
+                elapsed_ms = int((choice.timestamp - start_time).total_seconds() * 1000)
+            else:
+                elapsed_ms = ''
+            
+            chosen_side = 'A' if choice.chosen_stimulus_id == choice.stimulus_a_id else 'B'
+
+            writer.writerow([
+                simple_session_id(sess),                    # session_id (clean)
+                getattr(sess, 'subject_id', None),          # subject_id
+                choice.trial_number,                        # trial_number
+                s_a.stimulus_name if s_a else '',           # stimulus_a_name
+                s_b.stimulus_name if s_b else '',           # stimulus_b_name
+                s_c.stimulus_name if s_c else '',           # chosen_stimulus_name
+                choice.response_time_ms,                    # response_time_ms (per-trial RT)
+                elapsed_ms,                                 # elapsed_ms_from_start
+                choice.presentation_order,                  # 'AB' or 'BA'
+                chosen_side,
+            ])
+
+        # Use experiment name as base for filename
+        base_name = experiment.name or f"experiment_{experiment_id[:8]}"
+        # slugify: keep only letters, numbers, underscores, dashes
+        safe_name = re.sub(r'[^A-Za-z0-9_\-]+', '_', base_name).strip('_')
+
+        filename = f"{safe_name}_choices_clean.csv"
+
+        return Response(
+            output.getvalue(),
+            mimetype='text/csv',
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"'
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error exporting clean CSV: {e}")
         return jsonify({'error': str(e)}), 500
 
 
