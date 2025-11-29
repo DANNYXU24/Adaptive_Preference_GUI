@@ -1230,10 +1230,13 @@
         <h2>👋 Welcome! First time creating an adaptive preference experiment?</h2>
         <p>Let's get you started with a quick introduction!</p>
         <div class="banner-buttons">
-            <button onclick="window.location.href='/docs/intro_adaptive_preference_experimenter.html'" target="_blank">
+            <button class="btn-primary banner-btn" type="button"
+                onclick="window.open('docs/intro_adaptive_preference_experimenter.html', '_blank')">
                 New to adaptive preference? Start here
             </button>
-            <button class="secondary" onclick="dismissBanner()">I Know What I'm Doing</button>
+            <button class="btn-secondary banner-btn" type="button" onclick="dismissBanner()">
+                I Know What I'm Doing
+            </button>
         </div>
     </div>
 

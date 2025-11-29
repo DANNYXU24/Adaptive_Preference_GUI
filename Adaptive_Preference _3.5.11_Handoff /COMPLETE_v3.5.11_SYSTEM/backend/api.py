@@ -428,6 +428,33 @@ def auto_tag_stimulus(stimulus_id):
         db.session.rollback()
         logger.error(f"Error auto-tagging stimulus: {e}")
         return jsonify({'error': 'Failed to auto-tag stimulus'}), 500
+    
+@app.route('/api/stimuli/<stimulus_id>/assign_experiment', methods=['PATCH'])
+@require_auth
+@require_roles(['admin', 'researcher'])
+def assign_stimulus_experiment(stimulus_id):
+    """
+    Reassign a stimulus to a different experiment.
+    Body: { "experiment_id": "<uuid>" }
+    """
+    data = request.get_json() or {}
+    new_experiment_id = data.get('experiment_id')
+    if not new_experiment_id:
+        return jsonify({'error': 'experiment_id is required'}), 400
+
+    stim = Stimulus.query.filter_by(stimulus_id=stimulus_id).first()
+    if not stim:
+        return jsonify({'error': 'Stimulus not found'}), 404
+
+    # ensure the target experiment exists
+    exp = Experiment.query.filter_by(experiment_id=new_experiment_id).first()
+    if not exp:
+        return jsonify({'error': 'Target experiment not found'}), 404
+
+    stim.experiment_id = new_experiment_id
+    db.session.commit()
+    return jsonify({'success': True, 'stimulus': stim.to_dict()})
+
 
 @app.route('/api/experiments/<experiment_id>/archive', methods=['POST'])
 @require_auth
@@ -588,6 +615,7 @@ class Stimulus(db.Model):
             'hue': meta.get('hue'),
             # Tags are stored in the ARRAY column but exposed as a list
             'tags': self.tags or [],
+            'experiment_id': str(self.experiment_id) if self.experiment_id else None,
         }
 
 

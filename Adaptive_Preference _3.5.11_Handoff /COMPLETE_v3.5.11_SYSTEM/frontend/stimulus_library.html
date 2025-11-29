@@ -154,6 +154,88 @@
     
     .empty-state { text-align: center; padding: 60px 20px; color: var(--muted); }
     .empty-state-icon { font-size: 64px; margin-bottom: 16px; opacity: 0.5; }
+
+    .controls-header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .controls-header .filter-label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+
+    .select-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .controls-header #experimentSelect {
+      min-width: 260px;
+      padding: 10px 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: #e8ecff;
+      font-size: 14px;
+      font-weight: 500;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+      transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.1s ease;
+    }
+
+    .controls-header #experimentSelect:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent), 0 6px 16px rgba(0, 0, 0, 0.35);
+      transform: translateY(-1px);
+    }
+
+    #experimentFilterSelect,
+    #experimentTargetSelect {
+      min-width: 220px;
+      padding: 10px 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: #e8ecff;
+      font-size: 14px;
+      font-weight: 500;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+      transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.1s ease;
+    }
+
+    #experimentFilterSelect:focus,
+    #experimentTargetSelect:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent), 0 6px 16px rgba(0, 0, 0, 0.35);
+      transform: translateY(-1px);
+    }
+
+
+    /* optional: small button style that matches cards */
+    .btn-small.btn-move {
+      margin-top: 8px;
+      padding: 6px 10px;
+      font-size: 12px;
+      border-radius: 999px;
+      border: 1px solid var(--accent);
+      background: transparent;
+      color: var(--accent);
+      cursor: pointer;
+      transition: background 0.2s ease, color 0.2s ease;
+    }
+    .btn-small.btn-move:hover {
+      background: var(--accent);
+      color: #0b1020;
+    }
+
   </style>
 </head>
 <body>
@@ -184,13 +266,22 @@
 
   <div class="controls">
     <div class="controls-header">
-      <label class="filter-label" for="experimentSelect">Experiment</label>
-      <select id="experimentSelect">
-        <option value="">— Select an experiment —</option>
-      </select>
+      <div class="select-group">
+        <label class="filter-label" for="experimentFilterSelect">Viewing</label>
+        <select id="experimentFilterSelect">
+          <option value="">All experiments</option>
+        </select>
+      </div>
+
+      <div class="select-group">
+        <label class="filter-label" for="experimentTargetSelect">Move images to</label>
+        <select id="experimentTargetSelect">
+          <option value="">Select target…</option>
+        </select>
+      </div>
     </div>
 
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; margin-top: 16px;">
         <h2 style="font-size: 18px;">Upload & Filter</h2>
         <button class="btn" id="uploadBtn">📤 Upload Images</button>
       </div>
@@ -257,6 +348,9 @@
   </div>
 
   <script>
+
+    var experiments = [];
+
     (function() {
       var API_BASE = 'http://localhost:5000/api';
       var allStimuli = [];
@@ -269,19 +363,19 @@
           headers['Authorization'] = 'Bearer ' + token;
         }
         return headers;
-      }
+      } 
 
       async function devLogin() {
         try {
-          const resp = await fetch(`${API_BASE}/auth/dev_login`, {
+          const resp = await fetch(`${API_BASE}/auth/dev_issue_token`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' }
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ role: 'researcher', sub: 'dev-user' })
           });
           if (!resp.ok) throw new Error('Dev login failed');
           const data = await resp.json();
           localStorage.setItem('jwt', data.token);
           alert('Dev login succeeded!');
-          // reload to pick up JWT in authHeader()
           window.location.reload();
         } catch (err) {
           console.error(err);
@@ -296,13 +390,26 @@
           });
           if (!resp.ok) throw new Error('Failed to load experiments');
           const data = await resp.json();
-          const select = document.getElementById('experimentSelect');
+          experiments = data.experiments || [];
 
-          data.experiments.forEach(exp => {
-            const opt = document.createElement('option');
-            opt.value = exp.experiment_id;
-            opt.textContent = exp.name || '(untitled experiment)';
-            select.appendChild(opt);
+          const filterSelect = document.getElementById('experimentFilterSelect');
+          const targetSelect = document.getElementById('experimentTargetSelect');
+          const targetExpId = targetSelect.value;
+
+          // Clear existing options
+          filterSelect.innerHTML = '<option value="">All experiments</option>';
+          targetSelect.innerHTML = '<option value="">Select target…</option>';
+
+          experiments.forEach(exp => {
+            const opt1 = document.createElement('option');
+            opt1.value = exp.experiment_id;
+            opt1.textContent = exp.name || '(untitled experiment)';
+            filterSelect.appendChild(opt1);
+
+            const opt2 = document.createElement('option');
+            opt2.value = exp.experiment_id;
+            opt2.textContent = exp.name || '(untitled experiment)';
+            targetSelect.appendChild(opt2);
           });
         } catch (err) {
           console.error(err);
@@ -311,58 +418,136 @@
       }
 
       document.addEventListener('DOMContentLoaded', () => {
-      loadExperimentsForLibrary();
-      loadStimuli();  // existing function that fills the grid/list
+        loadExperimentsForLibrary();
+        loadStimuli();  // existing function that fills the grid/list
 
-      const uploadBtn = document.getElementById('uploadBtn');
-      const fileInput = document.getElementById('fileInput');
-
-      uploadBtn.addEventListener('click', () => {
-        fileInput.click();
-      });
-
-      fileInput.addEventListener('change', () => {
-        handleUpload(fileInput.files);
-        fileInput.value = '';
-      });
-      });
-
-      function loadStimuli() {
-        fetch(API_BASE + '/stimuli', { headers: authHeader() })
-          .then(function(response) {
-            if (!response.ok) throw new Error('Failed to load stimuli');
-            return response.json();
-          })
-          .then(function(data) {
-            allStimuli = data.stimuli || [];
+        const experimentSelect = document.getElementById('experimentFilterSelect');
+        experimentSelect.addEventListener('change', () => {
+          const experimentId = experimentSelect.value;
+          if (experimentId) {
+            filteredStimuli = allStimuli.filter(s => s.experiment_id === experimentId);
+          } else {
             filteredStimuli = allStimuli.slice();
-            renderStimuli();
-          })
-          .catch(function(error) {
-            console.error('Error loading stimuli:', error);
-            document.getElementById('stimuliContainer').innerHTML = 
-              '<div class="empty-state"><div class="empty-state-icon">⚠️</div><p>Failed to load stimuli: ' + 
-              error.message + '</p><button class="btn" onclick="location.reload()" style="margin-top: 16px;">Retry</button></div>';
-          });
+          }
+          renderStimuli();
+        });
+
+        const uploadBtn = document.getElementById('uploadBtn');
+        const fileInput = document.getElementById('fileInput');
+
+        uploadBtn.addEventListener('click', () => {
+          fileInput.click();
+        });
+
+        fileInput.addEventListener('change', () => {
+          handleUpload(fileInput.files);
+          fileInput.value = '';
+        });
+        });
+
+      async function loadStimuli() {
+        try {
+          const resp = await fetch(`${API_BASE}/stimuli`, { headers: authHeader() });
+          if (!resp.ok) {
+            let msg = resp.status + ' ' + resp.statusText;
+            try {
+              const errBody = await resp.json();
+              if (errBody && errBody.error) msg += ' – ' + errBody.error;
+            } catch (e) {
+              // ignore JSON parse error
+            }
+            throw new Error(msg);
+          }
+
+          const data = await resp.json();
+          allStimuli = data.stimuli || [];
+
+          const experimentId = document.getElementById('experimentFilterSelect').value;
+          if (experimentId) {
+            filteredStimuli = allStimuli.filter(s => s.experiment_id === experimentId);
+          } else {
+            filteredStimuli = allStimuli.slice();
+          }
+
+          renderStimuli();
+        } catch (err) {
+          console.error('loadStimuli error:', err);
+          alert('Failed to load stimuli: ' + err.message);
+        }
       }
 
-      function renderStimuli() {
-        var container = document.getElementById('stimuliContainer');
-        
-        if (filteredStimuli.length === 0) {
-          container.innerHTML = '<div class="empty-state"><div class="empty-state-icon">🖼️</div>' +
-            '<p>No stimuli found. Upload some images to get started!</p></div>';
-          return;
-        }
-        
-        container.innerHTML = '<div class="stimuli-grid" id="stimuliGrid"></div>';
-        var grid = document.getElementById('stimuliGrid');
-        
-        for (var i = 0; i < filteredStimuli.length; i++) {
-          var card = createStimulusCard(filteredStimuli[i]);
-          grid.appendChild(card);
+    function renderStimuli() {
+      var container = document.getElementById('stimuliContainer');
+
+      if (!filteredStimuli || filteredStimuli.length === 0) {
+        container.innerHTML =
+          '<div class="empty-state"><div class="empty-state-icon">🖼️</div>' +
+          '<p>No stimuli found. Upload some images to get started!</p></div>';
+        return;
+      }
+
+      container.innerHTML = '<div class="stimuli-grid" id="stimuliGrid"></div>';
+      var grid = document.getElementById('stimuliGrid');
+
+      for (let i = 0; i < filteredStimuli.length; i++) {
+        const stimulus = filteredStimuli[i];
+        const card = createStimulusCard(stimulus);
+        grid.appendChild(card);
+      }
+    }
+
+      async function reassignStimulus(stimulusId, newExperimentId) {
+        console.log('Reassigning stimulus', stimulusId, '→', newExperimentId);
+
+        try {
+          const resp = await fetch(
+            `${API_BASE}/stimuli/${encodeURIComponent(stimulusId)}/assign_experiment`,
+            {
+              method: 'PATCH',
+              headers: {
+                ...authHeader(),
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ experiment_id: newExperimentId })
+            }
+          );
+
+          if (!resp.ok) {
+            let msg = resp.status + ' ' + resp.statusText;
+            try {
+              const errData = await resp.json();
+              if (errData && errData.error) msg += ' – ' + errData.error;
+            } catch (e) {
+              // ignore parse error
+            }
+            console.error('Reassign failed:', msg);
+            alert('Failed to move stimulus: ' + msg);
+            return;
+          }
+
+          const data = await resp.json();
+          const updated = data.stimulus;
+          console.log('Reassign success:', updated);
+
+          // Update local arrays
+          const idx = allStimuli.findIndex(s => s.stimulus_id === stimulusId);
+          if (idx !== -1) allStimuli[idx] = updated;
+
+          const currentExp = document.getElementById('experimentFilterSelect').value;
+          if (currentExp) {
+            filteredStimuli = allStimuli.filter(s => s.experiment_id === currentExp);
+          } else {
+            filteredStimuli = allStimuli.slice();
+          }
+
+          renderStimuli();
+          alert('Stimulus moved to the selected experiment.');
+        } catch (err) {
+          console.error('Unexpected error while moving stimulus:', err);
+          alert('Unexpected error while moving stimulus: ' + err.message);
         }
       }
+
 
       function createStimulusCard(stimulus) {
         var card = document.createElement('div');
@@ -511,21 +696,39 @@
       function createCardActions(stimulus) {
         var actions = document.createElement('div');
         actions.className = 'card-actions';
-        
+
+        // 🤖 Auto-tag button
         var autoTagBtn = document.createElement('button');
         autoTagBtn.className = 'btn btn-small';
         autoTagBtn.textContent = '🤖 Auto-tag';
-        autoTagBtn.addEventListener('click', () => autoTag(stimulus.stimulus_id, autoTagBtn));
-        
+        autoTagBtn.addEventListener('click', () =>
+          autoTag(stimulus.stimulus_id, autoTagBtn)
+        );
+
+        // 💾 Save button
         var saveBtn = document.createElement('button');
         saveBtn.className = 'btn btn-small';
         saveBtn.id = 'saveBtn-' + stimulus.stimulus_id;
         saveBtn.textContent = '💾 Save';
         saveBtn.disabled = true;
         saveBtn.addEventListener('click', () => saveStimulus(stimulus.stimulus_id));
-        
+
+        // 🔁 Move to selected experiment
+        var moveBtn = document.createElement('button');
+        moveBtn.className = 'btn btn-small btn-move';
+        moveBtn.textContent = 'Move to selected experiment';
+        moveBtn.addEventListener('click', () => {
+          const targetExpId = document.getElementById('experimentTargetSelect').value;
+          if (!targetExpId) {
+            alert('Choose a target experiment in "Move images to" first.');
+            return;
+          }
+          reassignStimulus(stimulus.stimulus_id, targetExpId);
+        });
+
         actions.appendChild(autoTagBtn);
         actions.appendChild(saveBtn);
+        actions.appendChild(moveBtn);
         return actions;
       }
 
@@ -725,7 +928,7 @@
       function handleUpload(files) {
         if (!files || files.length === 0) return;
 
-        const experimentId = document.getElementById('experimentSelect').value;
+        const experimentId = document.getElementById('experimentFilterSelect').value;
         if (!experimentId) {
           alert('Please select an experiment before uploading images.');
           return;
@@ -777,8 +980,6 @@
       document.getElementById('filterBrightness').addEventListener('change', applyFilters);
       document.getElementById('filterHue').addEventListener('change', applyFilters);
       document.getElementById('filterTags').addEventListener('input', applyFilters);
-
-      window.addEventListener('DOMContentLoaded', loadStimuli);
     })();
   </script>
 </body>
