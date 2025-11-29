@@ -1997,6 +1997,9 @@
       <button onclick="uploadDebrief()">Upload</button>
     </form>
   </div>
+  <div style="margin-top:8px">
+    <a href="/api/consent" target="_blank">Preview consent</a> • <a href="/api/debrief" target="_blank">Preview debrief</a>
+  </div>
 </section>
 <script>
 function authHeader(){ const t=localStorage.getItem('jwt'); return t? {'Authorization':'Bearer '+t} : {}; }

@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Getting Started with Adaptive Preference Experiments</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      max-width: 800px;
+      margin: 2rem auto;
+      line-height: 1.6;
+      padding: 0 1rem;
+    }
+    h1, h2 {
+      color: #1f2933;
+    }
+    code {
+      background: #f1f5f9;
+      padding: 2px 4px;
+      border-radius: 4px;
+      font-size: 0.9em;
+    }
+    .callout {
+      border-left: 4px solid #667eea;
+      background: #f1f5ff;
+      padding: 1rem;
+      margin: 1rem 0;
+    }
+  </style>
+</head>
+<body>
+  <h1>Welcome to the Adaptive Preference System</h1>
+  <p>This brief guide is for experimenters who are new to adaptive preference methods but want to design a study with this tool.</p>
+
+  <h2>1. What is an adaptive preference experiment?</h2>
+  <p>
+    In a standard preference task, you might show every possible pair of images and count how often each one is chosen.
+    That becomes impossible once you have more than a handful of stimuli.
+    Adaptive preference experiments solve this by using a Bayesian model that <strong>chooses the next pair based on previous responses</strong>.
+  </p>
+
+  <div class="callout">
+    <strong>Key idea:</strong> You don’t predefine all pairs. The algorithm learns which comparisons are most informative.
+  </div>
+
+  <h2>2. The basic flow</h2>
+  <ol>
+    <li><strong>Define your goal.</strong> What are you trying to learn or rank?</li>
+    <li><strong>Select stimuli.</strong> Choose the images that represent the conditions you care about.</li>
+    <li><strong>Set parameters.</strong> How many trials? Progress bar? Breaks?</li>
+    <li><strong>Run sessions.</strong> Participants see pairs of images and choose which they prefer.</li>
+    <li><strong>Analyze results.</strong> Use the CSV exports to compute rankings, compare conditions, etc.</li>
+  </ol>
+
+  <h2>3. How to think about trials, stimuli, and fatigue</h2>
+  <ul>
+    <li>More stimuli = more potential pairs → you need more trials for a stable ranking.</li>
+    <li>Too few trials = noisy estimates, but short sessions.</li>
+    <li>Too many trials = better estimates, but fatigue and drop-out risk.</li>
+  </ul>
+  <p>A good starting rule of thumb is <strong>3–5 comparisons per image</strong> for a single session.</p>
+
+  <h2>4. Recommended starting settings</h2>
+  <ul>
+    <li>Quick demo / pilot: 6–8 stimuli, 20–30 trials, no breaks.</li>
+    <li>Serious study, small set: 8–12 stimuli, 40–60 trials, break every 20 trials.</li>
+    <li>Screening many candidates: 15–30 stimuli, 40–80 trials, short breaks, consider multiple sessions if needed.</li>
+  </ul>
+
+  <h2>5. Order effects and counterbalancing</h2>
+  <p>
+    People have side biases (always clicking left, for example).
+    The system automatically randomizes which image appears on the left vs right.
+    We recommend keeping <code>counterbalancing</code> enabled unless you have a very specific reason not to.
+  </p>
+
+  <h2>6. Where to go next</h2>
+  <ul>
+    <li>Use the <strong>Study Goal Helper</strong> on the Experimenter Dashboard to get tailored suggestions.</li>
+    <li>Use the <strong>Stimulus Library</strong> to manage and reuse your image sets.</li>
+    <li>Use the <strong>Results Dashboard</strong> and CSV exports to analyze your data in R, Python, or Excel.</li>
+  </ul>
+</body>
+</html>

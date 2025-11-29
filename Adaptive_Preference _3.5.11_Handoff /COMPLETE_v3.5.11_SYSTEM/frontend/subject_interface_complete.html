@@ -1153,11 +1153,51 @@
     <div style="margin-top:12px"><button onclick="document.getElementById('consentModal').style.display='none'">Close</button></div>
   </div>
 </div>
+
 <script>
-async function openConsent(){
-  try{ const r = await fetch('http://localhost:5000/api/consent'); const t = await r.text(); document.getElementById('consentContent').innerHTML=t; }catch(e){ document.getElementById('consentContent').innerText='Unable to load consent.'; }
-  document.getElementById('consentModal').style.display='block';
-}
+        async function openConsent() {
+            const modal = document.getElementById('consentModal');
+            const contentEl = document.getElementById('consentContent');
+
+            contentEl.innerHTML = 'Loading…';
+
+            try {
+                const resp = await fetch('http://localhost:5000/api/consent', {
+                headers: { 'Accept': '*/*' }
+                });
+
+                if (!resp.ok) {
+                throw new Error('Consent not available');
+                }
+
+                const ct = (resp.headers.get('Content-Type') || '').toLowerCase();
+
+                if (ct.includes('pdf')) {
+                // PDF: show an embedded viewer + link
+                const blob = await resp.blob();
+                const url = URL.createObjectURL(blob);
+                contentEl.innerHTML = `
+                    <p>This consent form is provided as a PDF.</p>
+                    <p>
+                    <a href="${url}" target="_blank" rel="noopener">
+                        Open consent in a new tab
+                    </a>
+                    </p>
+                    <embed src="${url}" type="application/pdf"
+                        style="width:100%;height:60vh;border:1px solid #ccc;border-radius:8px;" />
+                `;
+                } else {
+                // HTML or plaintext
+                const text = await resp.text();
+                contentEl.innerHTML = text;
+                }
+            } catch (err) {
+                console.error('Consent load error', err);
+                contentEl.innerText = 'Unable to load consent.';
+            }
+
+        modal.style.display = 'block';
+        }
 
 
         // ===== RESILIENT NETWORKING SYSTEM =====

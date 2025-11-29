@@ -156,9 +156,6 @@
         }
 
         .header .help-button {
-            position: absolute;
-            top: 20px;
-            right: 20px;
             background: rgba(255,255,255,0.2);
             color: white;
             border: 2px solid white;
@@ -167,6 +164,15 @@
             cursor: pointer;
             font-weight: 600;
             transition: all 0.3s;
+        }
+
+        /* New: layout container for header buttons */
+        .header-actions {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            display: flex;
+            gap: 10px;
         }
 
         .header .help-button:hover {
@@ -1224,8 +1230,9 @@
         <h2>👋 Welcome! First time creating an adaptive preference experiment?</h2>
         <p>Let's get you started with a quick introduction!</p>
         <div class="banner-buttons">
-            <button onclick="startTutorial()">📚 Start 5-Minute Tutorial</button>
-            <button onclick="showExamples()">👁️ Show Me Examples</button>
+            <button onclick="window.location.href='/docs/intro_adaptive_preference_experimenter.html'" target="_blank">
+                New to adaptive preference? Start here
+            </button>
             <button class="secondary" onclick="dismissBanner()">I Know What I'm Doing</button>
         </div>
     </div>
@@ -1237,7 +1244,12 @@
         <div class="header">
             <h1>Experimenter Dashboard</h1>
             <p>Create and manage your adaptive preference experiments</p>
-            <button class="help-button" onclick="showHelp()">❓ Help</button>
+
+            <div class="header-actions">
+                <button class="help-button" onclick="showHelp('goalIntro')">❓ Help</button>
+                <button class="help-button" onclick="openGoalHelper()">🎯 Describe my study goal</button>
+            </div>
+
         </div>
 
         <!-- Progress Stepper -->
@@ -1386,8 +1398,19 @@
                     
                     <div class="wizard-callout">
                         <h3 style="margin-bottom: 10px;">🧙 Not sure what values to use?</h3>
-                        <p style="margin-bottom: 15px;">Our Parameter Wizard will ask you 3 quick questions and recommend the best settings.</p>
-                        <button class="btn btn-primary" onclick="openWizard()">Launch Parameter Wizard</button>
+                        <p style="margin-bottom: 15px;">
+                            Our tools can help:
+                            <br>• <strong>Study Goal Helper</strong> – start from your research question
+                            <br>• <strong>Parameter Wizard</strong> – refine number of trials & breaks
+                        </p>
+                        <div class="button-group">
+                            <button class="btn btn-primary" type="button" onclick="openGoalHelper()">
+                                🎯 Describe my study goal
+                            </button>
+                            <button class="btn btn-secondary" type="button" onclick="openWizard()">
+                                ⚙️ Launch Parameter Wizard
+                            </button>
+                        </div>
                     </div>
                     
                     <div class="form-group">
@@ -1570,7 +1593,148 @@
         </div>
     </div>
 
+    <!-- Goal Helper Modal -->
+    <div class="modal-overlay" id="goalHelperModal" style="display:none;">
+    <div class="modal">
+        <div class="modal-header">
+        <h3>Describe Your Study Goal</h3>
+        <p>Tell the system what you’re trying to learn so it can recommend a setup.</p>
+        </div>
+        <div class="modal-body">
+        <div class="form-group">
+            <label>
+            In your own words
+            <span class="help-icon" onclick="showHelp('goalIntro')">ⓘ</span>
+            </label>
+            <textarea id="goalDescription" placeholder="e.g., I want to find out which room shapes feel most calming while people walk through them."></textarea>
+        </div>
+
+        <div class="form-group">
+            <label>Choose a goal type</label>
+            <div class="wizard-options">
+            <div class="wizard-option" onclick="selectGoalCategory('small_rank')">
+                <strong>Rank a small set of designs</strong>
+                <p>Compare a handful (4–12) of images to get a precise preference ordering.</p>
+            </div>
+            <div class="wizard-option" onclick="selectGoalCategory('screen_many')">
+                <strong>Screen many candidate images</strong>
+                <p>Filter down a large library (20+ images) into “promising” vs “not promising”.</p>
+            </div>
+            <div class="wizard-option" onclick="selectGoalCategory('quick_pilot')">
+                <strong>Quick pilot / classroom demo</strong>
+                <p>Small number of trials to test the pipeline or demo the system.</p>
+            </div>
+            <div class="wizard-option" onclick="selectGoalCategory('fine_grained')">
+                <strong>Fine-grained ranking</strong>
+                <p>High precision ranking of a carefully curated set (e.g., 8–10 stimuli) with more trials.</p>
+            </div>
+            </div>
+        </div>
+
+        <div id="goalRecommendationBox" class="info-callout" style="display:none; margin-top:20px;"></div>
+
+        <div class="button-group" style="margin-top:20px;">
+            <button class="btn btn-secondary" onclick="closeGoalHelper()">Cancel</button>
+            <button class="btn btn-primary" onclick="applyGoalProfileAndClose()">Apply & Continue</button>
+        </div>
+        </div>
+    </div>
+    </div>
+
+
     <script>
+        function openGoalHelper() {
+            document.getElementById('goalHelperModal').style.display = 'flex';
+            }
+
+            function closeGoalHelper() {
+            document.getElementById('goalHelperModal').style.display = 'none';
+            }
+
+            function selectGoalCategory(cat) {
+            state.experimentData.goalCategory = cat;
+
+            const desc = (document.getElementById('goalDescription').value || '').trim();
+            state.experimentData.goalDescription = desc;
+
+            const numImages = state.experimentData.images.length || 10;
+
+            // Simple heuristics
+            let trials, breakEvery, blurb;
+            if (cat === 'small_rank') {
+                trials = Math.max(30, numImages * 4);
+                breakEvery = 20;
+                blurb = `For ranking a small set (~${numImages} images), we recommend ~${trials} trials so each image appears several times in different pairings.`;
+            } else if (cat === 'screen_many') {
+                trials = Math.min(80, Math.max(40, numImages * 3));
+                breakEvery = 20;
+                blurb = `For screening many candidates (~${numImages} images), we recommend ${trials} trials to quickly identify which ones are clearly preferred.`;
+            } else if (cat === 'quick_pilot') {
+                trials = 20;
+                breakEvery = 0;
+                blurb = `For a quick pilot/demo, ${trials} trials keep the session short while still exercising the pipeline.`;
+            } else if (cat === 'fine_grained') {
+                trials = Math.max(60, numImages * 5);
+                breakEvery = 25;
+                blurb = `For fine-grained ranking, ${trials} trials give you high precision but expect a longer session.`;
+            } else {
+                trials = 40;
+                breakEvery = 20;
+                blurb = `Default profile: 40 trials with a break every 20 trials.`;
+            }
+
+            state.experimentData.recommendation = { trials, breakEvery };
+
+            const box = document.getElementById('goalRecommendationBox');
+            box.style.display = 'block';
+            box.innerHTML = `
+                <h3>Recommended Setup</h3>
+                <p>${blurb}</p>
+                <ul>
+                <li><strong>Trials:</strong> ${trials}</li>
+                <li><strong>Break every:</strong> ${breakEvery || 'no breaks'} trials</li>
+                <li><strong>Progress bar:</strong> enabled</li>
+                <li><strong>Counterbalancing:</strong> enabled (AB/BA)</li>
+                </ul>
+            `;
+            }
+
+        function applyGoalProfileAndClose() {
+            const rec = state.experimentData.recommendation;
+            if (rec) {
+                // Update controls on the parameters step
+                const slider = document.getElementById('trialsSlider');
+                if (slider) {
+                    slider.value = rec.trials;
+                }
+
+                const breakInput = document.getElementById('breakInterval');
+                if (breakInput) {
+                    breakInput.value = rec.breakEvery;
+                }
+
+                document.getElementById('showProgress').checked = true;
+                document.getElementById('counterbalance').checked = true;
+
+                state.experimentData.numTrials = rec.trials;
+                updateTrialsValue();
+            }
+            closeGoalHelper();
+            // Optionally jump them to the "Upload Images" or "Parameters" step:
+            if (state.currentStep < 2) {
+                document
+                .getElementById(`content-step-${state.currentStep}`)
+                .classList.remove('active');
+                state.currentStep = 2;
+                document
+                .getElementById('content-step-2')
+                .classList.add('active');
+                updateProgress();
+                updateStepIndicators();
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+        }
+
         // ===== STATE MANAGEMENT =====
         const state = {
             currentStep: 1,
@@ -1584,7 +1748,11 @@
                 counterbalance: true,
                 breakInterval: 20,
                 instructions: '',
-                completionMessage: ''
+                completionMessage: '',
+                goalCategory: null,       
+                goalDescription: '',      
+                recommendation: null     
+
             },
             wizardAnswers: {}
         };
@@ -1636,6 +1804,27 @@
 
                     // NOTE: we’re not auto-loading existing stimuli into the uploader yet.
                     // The experiment will still use whatever stimuli are already in the DB.
+
+                    // ✅ restore goal helper metadata if present
+                    const meta = exp.experiment_metadata || {};
+                    state.experimentData.goalCategory = meta.goal_category || null;
+                    state.experimentData.goalDescription = meta.goal_description || '';
+                    state.experimentData.recommendation = meta.recommended_profile || null;
+
+                    // Optionally prefill sliders from the recommendation
+                    if (state.experimentData.recommendation) {
+                        const rec = state.experimentData.recommendation;
+                        const trialsSlider = document.getElementById('trialsSlider');
+                        if (trialsSlider && rec.trials) {
+                            trialsSlider.value = rec.trials;
+                            state.experimentData.numTrials = rec.trials;
+                            updateTrialsValue();
+                        }
+                        if (rec.breakEvery != null) {
+                            document.getElementById('breakInterval').value = rec.breakEvery;
+                        }
+                    }
+
                 } catch (err) {
                     console.error(err);
                     alert('Error loading experiment for editing: ' + err.message);
@@ -2169,7 +2358,7 @@
             const validation = document.getElementById('validationResults');
             if (errors.length > 0) {
                 validation.className = 'validation-message error';
-                validation.innerHTML = '❌ Please fix these issues:<br>' + errors.join('<br>');
+                validation.innerHTML = 'Please fix these issues:<br>' + errors.join('<br>');
                 validation.style.display = 'block';
             } else {
                 validation.className = 'validation-message success';
@@ -2191,7 +2380,13 @@
                 completion_message: document.getElementById('completionMessage').value,
                 epsilon: 0.01,
                 exploration_weight: 0.1,
-                status: 'draft'
+                status: 'draft',
+                experiment_metadata: {                    // NEW
+                    goal_category: state.experimentData.goalCategory,
+                    goal_description: state.experimentData.goalDescription,
+                    recommended_profile: state.experimentData.recommendation
+                }
+
             };
             
         try {
@@ -2303,6 +2498,26 @@ function authHeader() {
 
         // ===== HELP-INTENSIVE DESIGN SYSTEM =====
         const helpContent = {
+            'goalIntro': {
+                title: 'What is an adaptive preference experiment?',
+                content: `
+                Adaptive preference experiments show people pairs of stimuli (A vs B)
+                and ask which they prefer. Instead of precomputing all pairings,
+                a Bayesian algorithm chooses the most informative next pair based on
+                previous responses. This lets you learn a preference ranking with
+                fewer trials than a fixed design.`,
+                example: 'Example: “Given 8 room designs, estimate which ones feel most calming with ~40–60 quick choices.”'
+            },
+            'stimulusSelection': {
+                title: 'Choosing good stimuli',
+                content: `
+                Focus on consistent, clean images: same resolution, similar framing,
+                no distracting text or overlays. Avoid mixing very different types
+                of content (e.g., photos + line drawings) in the same experiment
+                unless that contrast is part of your research question.`,
+                example: 'Example: 8 room interiors that only vary in curvature and color saturation.'
+            },
+
             'expName': {
                 title: 'Experiment Name',
                 content: 'Choose a descriptive name that identifies your study. This helps you organize multiple experiments.',

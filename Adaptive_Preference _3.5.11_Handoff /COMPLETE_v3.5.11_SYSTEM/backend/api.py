@@ -238,7 +238,9 @@ class Experiment(db.Model):
             'status': self.status,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'published_at': self.published_at.isoformat() if self.published_at else None,
-            'estimated_duration_minutes': int((self.max_trials * 3.0) / 60.0)
+            'estimated_duration_minutes': int((self.max_trials * 3.0) / 60.0),
+            'experiment_metadata': self.experiment_metadata or {}
+
         }
         
         if include_stimuli:
@@ -455,78 +457,95 @@ def archive_experiment(experiment_id):
         db.session.rollback()
         logger.error(f"Error archiving experiment: {e}")
         return jsonify({'error': 'Failed to archive experiment'}), 500
+    
+from sqlalchemy import delete as sa_delete
 
 @app.route('/api/experiments/<experiment_id>', methods=['DELETE'])
 @require_auth
-@require_roles(['admin'])
+@require_roles(['admin', 'researcher'])
 def delete_experiment(experiment_id):
     """
     Delete an experiment.
 
     Query param:
-      - delete_data=1 → delete experiment AND all sessions / choices / stimuli / algorithm_state.
+      - delete_data=1 → delete experiment AND all sessions / choices / stimuli / algorithm_state / audit logs.
       - delete_data=0 or omitted → only delete experiment row IF there are no sessions; otherwise 400.
     """
     delete_data_flag = request.args.get('delete_data', '0')
     delete_data = delete_data_flag in ('1', 'true', 'True', 'yes')
 
     try:
+        # Load experiment once via ORM so we can verify it exists
         exp = Experiment.query.filter_by(experiment_id=experiment_id).first()
         if not exp:
             return jsonify({'error': 'Experiment not found'}), 404
 
-        # Gather session IDs
+        # Grab needed info *before* we delete anything
+        exp_name = exp.name
         session_ids = [s.session_id for s in exp.sessions]
 
+        # If caller didn't explicitly allow data deletion but there are sessions, block it
         if not delete_data and session_ids:
-            # We cannot safely drop just the experiment row and keep orphaned sessions,
-            # because of non-nullable FK constraints.
             return jsonify({
-                'error': 'Experiment has existing sessions; delete_data=1 is required to delete it. '
-                         'Use /api/experiments/<id>/archive to hide it instead.'
+                'error': (
+                    'Experiment has existing sessions; delete_data=1 is required to delete it. '
+                    'Use /api/experiments/<id>/archive to hide it instead.'
+                )
             }), 400
 
-        # If delete_data is true, remove dependent rows in a safe order
+        # ---- Perform FK-safe bulk deletes using Core ----
+
         if delete_data and session_ids:
-            # Choices depend on sessions
-            Choice.query.filter(Choice.session_id.in_(session_ids)) \
-                        .delete(synchronize_session=False)
+            # 1) Audit log rows tied to those sessions (FK depends on sessions)
+            db.session.execute(
+                sa_delete(AuditLog).where(AuditLog.session_id.in_(session_ids))
+            )
 
-            # AlgorithmState also depends on sessions
-            AlgorithmState.query.filter(AlgorithmState.session_id.in_(session_ids)) \
-                                .delete(synchronize_session=False)
+            # 2) Choices linked to sessions
+            db.session.execute(
+                sa_delete(Choice).where(Choice.session_id.in_(session_ids))
+            )
 
-            # Sessions themselves
-            Session.query.filter(Session.session_id.in_(session_ids)) \
-                         .delete(synchronize_session=False)
+            # 3) AlgorithmState linked to sessions
+            db.session.execute(
+                sa_delete(AlgorithmState).where(AlgorithmState.session_id.in_(session_ids))
+            )
 
-        # Stimuli belong to experiment; safe to remove now
-        Stimulus.query.filter_by(experiment_id=experiment_id) \
-                      .delete(synchronize_session=False)
+            # 4) Sessions themselves
+            db.session.execute(
+                sa_delete(Session).where(Session.session_id.in_(session_ids))
+            )
 
-        # Optional: also cull audit log rows tied to this experiment
-        AuditLog.query.filter_by(experiment_id=experiment_id) \
-                      .delete(synchronize_session=False)
-
-        # Finally delete the experiment record
-        db.session.delete(exp)
-        db.session.commit()
-
-        log_audit(
-            'experiment_deleted',
-            'experiment',
-            f'Deleted experiment: {exp.name}',
-            {'experiment_id': experiment_id, 'delete_data': delete_data},
-            experiment_id=experiment_id,
-            severity='warning'
+        # 5) Stimuli belonging to this experiment
+        db.session.execute(
+            sa_delete(Stimulus).where(Stimulus.experiment_id == experiment_id)
         )
 
-        return jsonify({'success': True, 'delete_data': delete_data})
+        # 6) Any remaining audit log rows tied directly to this experiment
+        db.session.execute(
+            sa_delete(AuditLog).where(AuditLog.experiment_id == experiment_id)
+        )
+
+        # 7) Finally, delete the experiment record itself
+        db.session.execute(
+            sa_delete(Experiment).where(Experiment.experiment_id == experiment_id)
+        )
+
+        db.session.commit()
+
+        # IMPORTANT: do NOT touch `exp` here; it refers to a row that no longer exists.
+        # If you want to return its name, use exp_name which we captured before deleting.
+        return jsonify({
+            'success': True,
+            'delete_data': delete_data,
+            'experiment_id': experiment_id,
+            'experiment_name': exp_name,
+        })
+
     except Exception as e:
         db.session.rollback()
-        logger.error(f"Error deleting experiment: {e}")
-        return jsonify({'error': f'Failed to delete experiment: {e}'}), 500
-
+        app.logger.exception('Failed to delete experiment')
+        return jsonify({'error': f'Failed to delete experiment: {str(e)}'}), 500
 
 class Stimulus(db.Model):
     __tablename__ = 'stimuli'
@@ -892,7 +911,9 @@ def create_experiment():
             enable_counterbalancing=data.get('enable_counterbalancing', True),
             instructions=data.get('instructions'),
             completion_message=data.get('completion_message'),
-            status='draft'
+            status='draft',
+            experiment_metadata=data.get('experiment_metadata') or {}
+
         )
 
         db.session.add(experiment)

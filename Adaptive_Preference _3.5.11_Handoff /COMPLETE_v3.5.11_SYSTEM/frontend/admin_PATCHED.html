@@ -610,7 +610,7 @@
 
           // Delete button
           const deleteBtn = row.querySelector('.btn-delete');
-          deleteBtn.addEventListener('click', () => deleteExperiment(exp.experiment_id));
+          deleteBtn.addEventListener('click', () => deleteExperiment(exp.experiment_id, true));
 
         });
       } catch (error) {
