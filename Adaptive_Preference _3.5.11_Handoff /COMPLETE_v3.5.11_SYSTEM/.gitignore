@@ -19,3 +19,7 @@ backend/uploads/
 # Editor/IDE
 .vscode/
 .idea/
+.venv/
+backend/venv/
+backend/.env
+backend/venv/
