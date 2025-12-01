@@ -57,7 +57,7 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
 }
 
 # File upload configuration
-app.config['UPLOAD_FOLDER'] = os.environ.get('UPLOAD_FOLDER', '/var/www/uploads')
+app.config['UPLOAD_FOLDER'] = os.path.join(BASE_DIR, 'backend', 'uploads')
 app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024  # 5MB max file size
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
 
