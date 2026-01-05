@@ -57,7 +57,8 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
 }
 
 # File upload configuration
-app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads')
+_default_upload = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets', 'stimuli')
+app.config['UPLOAD_FOLDER'] = os.environ.get('UPLOAD_FOLDER', _default_upload)
 app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024  # 5MB max file size
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
 
