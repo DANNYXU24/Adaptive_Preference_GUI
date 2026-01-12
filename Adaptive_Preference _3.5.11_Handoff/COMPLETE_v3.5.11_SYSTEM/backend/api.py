@@ -594,48 +594,38 @@ def delete_experiment(experiment_id):
 class Stimulus(db.Model):
     __tablename__ = 'stimuli'
     
-    stimulus_id = db.Column(db.String(36), primary_key=True, default=uuid.uuid4)
-    experiment_id = db.Column(db.String(36), db.ForeignKey('experiments.experiment_id', ondelete='CASCADE'), nullable=False)
+    # ... other columns ...
     
-    stimulus_name = db.Column(db.String(200), nullable=False)
-    display_order = db.Column(db.Integer)
-    file_path = db.Column(db.String(500), nullable=False)
-    url = db.Column(db.Text)
-    file_size_bytes = db.Column(db.Integer)
-    mime_type = db.Column(db.String(100))
-    width_px = db.Column(db.Integer)
-    height_px = db.Column(db.Integer)
-    checksum_sha256 = db.Column(db.String(64))
-    stimulus_metadata = db.Column('metadata', db.JSON, default={})
-    tags = db.Column(db.ARRAY(db.String))
+    # CHANGE THIS LINE:
+    # tags = db.Column(db.ARRAY(db.String)) 
+    # TO THIS (Compatible with both SQLite and Postgres):
+    tags = db.Column(db.JSON, default=[]) 
+    
     uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
     
-    # Relationships
-    experiment = db.relationship('Experiment', back_populates='stimuli')
-    
+    # ... relationships ...
+
     def to_dict(self):
         meta = self.stimulus_metadata or {}
+        # Ensure tags is always a list for the frontend
+        current_tags = self.tags if isinstance(self.tags, list) else []
+        
         return {
             'stimulus_id': str(self.stimulus_id),
             'stimulus_name': self.stimulus_name,
-            # alias for GUI code that expects `filename`
             'filename': self.stimulus_name,
             'url': self.url,
             'file_size_bytes': self.file_size_bytes,
             'mime_type': self.mime_type,
             'width_px': self.width_px,
             'height_px': self.height_px,
-            # Flattened metadata fields for the Stimulus Library UI
             'room_type': meta.get('room_type'),
             'curvature_level': meta.get('curvature_level'),
             'brightness': meta.get('brightness'),
             'hue': meta.get('hue'),
-            # Tags are stored in the ARRAY column but exposed as a list
-            'tags': self.tags or [],
+            'tags': current_tags, # Use the cleaned list
             'experiment_id': str(self.experiment_id) if self.experiment_id else None,
         }
-
-
 
 class Session(db.Model):
     __tablename__ = 'sessions'
