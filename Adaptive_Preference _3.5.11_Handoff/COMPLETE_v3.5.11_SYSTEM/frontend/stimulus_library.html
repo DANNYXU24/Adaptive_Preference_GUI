@@ -1,0 +1,986 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Stimulus Library</title>
+  <!-- 
+    Backend API Assumptions:
+    - GET /api/stimuli -> {stimuli: [{stimulus_id, filename, url, room_type, curvature_level, brightness, hue, tags: []}]}
+    - POST /api/stimuli/upload -> multipart/form-data file upload
+    - PUT /api/stimuli/{id} -> {room_type, curvature_level, brightness, hue, tags}
+    - POST /api/stimuli/{id}/auto_tag -> {tags: [...]}
+  -->
+  <style>
+        .top-nav {
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            padding:12px 24px;
+            background:#0b1020;
+            border-bottom:1px solid #2a3359;
+        }
+        .nav-logo {
+            font-weight:700;
+            letter-spacing:0.05em;
+        }
+        .nav-links a {
+            margin:0 8px;
+            color:#e8ecff;
+            text-decoration:none;
+            font-size:14px;
+        }
+        .nav-links a:hover,
+        .nav-links a:focus {
+            text-decoration:underline;
+        }
+        .nav-right .btn {
+            padding:8px 12px;
+            border-radius:999px;
+        }
+
+    :root {
+      --bg: #0b1020;
+      --panel: #121a35;
+      --border: #2a3359;
+      --muted: #9aa3c7;
+      --accent: #667eea;
+    }
+    
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: #e8ecff;
+      min-height: 100vh;
+    }
+    
+    .container { max-width: 1400px; margin: 0 auto; padding: 32px; }
+    .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 32px; }
+    .header h1 { font-size: 28px; font-weight: 800; }
+    
+    .btn {
+      background: var(--accent);
+      color: white;
+      border: none;
+      padding: 12px 20px;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    
+    .btn:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4); }
+    .btn-secondary { background: transparent; border: 1px solid var(--border); }
+    
+    .controls {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 24px;
+    }
+    
+    .filter-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+      margin-top: 16px;
+    }
+    
+    .filter-group label {
+      display: block;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    
+    .filter-group select, .filter-group input {
+      width: 100%;
+      padding: 10px 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: #e8ecff;
+      font-size: 14px;
+    }
+    
+    .filter-group select:focus, .filter-group input:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    
+    .stimuli-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 20px;
+    }
+    
+    .stimulus-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      transition: all 0.3s;
+    }
+    
+    .stimulus-card:hover { transform: translateY(-4px); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3); }
+    .stimulus-image { width: 100%; height: 200px; object-fit: cover; background: var(--bg); }
+    .stimulus-info { padding: 16px; }
+    .stimulus-filename { font-weight: 600; margin-bottom: 12px; color: #e8ecff; font-size: 14px; word-break: break-word; }
+    
+    .form-field { margin-bottom: 12px; }
+    .form-field label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 4px; }
+    .form-field input, .form-field select { width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: #e8ecff; font-size: 13px; }
+    
+    .tags-container { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; min-height: 30px; }
+    .tag { background: rgba(102, 126, 234, 0.2); color: #dbe1ff; padding: 4px 10px; border-radius: 12px; font-size: 11px; display: inline-flex; align-items: center; gap: 6px; }
+    .tag-remove { cursor: pointer; font-weight: bold; color: #fc8181; }
+    .tag-input { display: flex; gap: 6px; margin-top: 8px; }
+    .tag-input input { flex: 1; }
+    .btn-small { padding: 6px 12px; font-size: 12px; }
+    .card-actions { display: flex; gap: 8px; margin-top: 12px; }
+    
+    .loading { text-align: center; padding: 60px 20px; color: var(--muted); }
+    .spinner { border: 3px solid var(--border); border-top: 3px solid var(--accent); border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 0 auto 16px; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    
+    .empty-state { text-align: center; padding: 60px 20px; color: var(--muted); }
+    .empty-state-icon { font-size: 64px; margin-bottom: 16px; opacity: 0.5; }
+
+    .controls-header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .controls-header .filter-label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+
+    .select-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .controls-header #experimentSelect {
+      min-width: 260px;
+      padding: 10px 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: #e8ecff;
+      font-size: 14px;
+      font-weight: 500;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+      transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.1s ease;
+    }
+
+    .controls-header #experimentSelect:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent), 0 6px 16px rgba(0, 0, 0, 0.35);
+      transform: translateY(-1px);
+    }
+
+    #experimentFilterSelect,
+    #experimentTargetSelect {
+      min-width: 220px;
+      padding: 10px 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: #e8ecff;
+      font-size: 14px;
+      font-weight: 500;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+      transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.1s ease;
+    }
+
+    #experimentFilterSelect:focus,
+    #experimentTargetSelect:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent), 0 6px 16px rgba(0, 0, 0, 0.35);
+      transform: translateY(-1px);
+    }
+
+
+    /* optional: small button style that matches cards */
+    .btn-small.btn-move {
+      margin-top: 8px;
+      padding: 6px 10px;
+      font-size: 12px;
+      border-radius: 999px;
+      border: 1px solid var(--accent);
+      background: transparent;
+      color: var(--accent);
+      cursor: pointer;
+      transition: background 0.2s ease, color 0.2s ease;
+    }
+    .btn-small.btn-move:hover {
+      background: var(--accent);
+      color: #0b1020;
+    }
+
+  </style>
+</head>
+<body>
+
+  <header class="top-nav">
+    <div class="nav-left">
+      <span class="nav-logo">Adaptive Preference</span>
+    </div>
+    <nav class="nav-links" aria-label="Main navigation">
+      <a href="admin_PATCHED.html">Admin Home</a>
+      <a href="experimenter_dashboard_improved.html">Experiment Builder</a>
+      <a href="stimulus_library.html">Stimulus Library</a>
+    </nav>
+    <div class="nav-right">
+      <button type="button" class="btn btn-secondary" onclick="devLogin()">Dev Login</button>
+      <button class="btn" type="submit">Log in</button>
+    </div>
+  </header>
+
+  <div class="container">
+    <div class="header">
+      <div>
+        <h1>Stimulus Library</h1>
+        <p style="color: var(--muted); margin-top: 4px;">Manage and categorize your experiment images</p>
+      </div>
+      <a href="admin_PATCHED.html" class="btn btn-secondary">← Back to Admin Home</a>
+    </div>
+
+  <div class="controls">
+    <div class="controls-header">
+      <div class="select-group">
+        <label class="filter-label" for="experimentFilterSelect">Viewing</label>
+        <select id="experimentFilterSelect">
+          <option value="">All experiments</option>
+        </select>
+      </div>
+
+      <div class="select-group">
+        <label class="filter-label" for="experimentTargetSelect">Move images to</label>
+        <select id="experimentTargetSelect">
+          <option value="">Select target…</option>
+        </select>
+      </div>
+    </div>
+
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; margin-top: 16px;">
+        <h2 style="font-size: 18px;">Upload & Filter</h2>
+        <button class="btn" id="uploadBtn">📤 Upload Images</button>
+      </div>
+      
+      <input type="file" id="fileInput" multiple accept="image/*" style="display: none;">
+      
+      <div class="filter-grid">
+        <div class="filter-group">
+          <label>Room Type</label>
+          <select id="filterRoomType">
+            <option value="">All</option>
+            <option value="living">Living Room</option>
+            <option value="bedroom">Bedroom</option>
+            <option value="kitchen">Kitchen</option>
+            <option value="office">Office</option>
+            <option value="bathroom">Bathroom</option>
+          </select>
+        </div>
+        
+        <div class="filter-group">
+          <label>Curvature Level</label>
+          <select id="filterCurvature">
+            <option value="">All</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+            <option value="none">None</option>
+          </select>
+        </div>
+        
+        <div class="filter-group">
+          <label>Brightness</label>
+          <select id="filterBrightness">
+            <option value="">All</option>
+            <option value="bright">Bright</option>
+            <option value="medium">Medium</option>
+            <option value="dark">Dark</option>
+          </select>
+        </div>
+        
+        <div class="filter-group">
+          <label>Hue</label>
+          <select id="filterHue">
+            <option value="">All</option>
+            <option value="warm">Warm</option>
+            <option value="cool">Cool</option>
+            <option value="neutral">Neutral</option>
+          </select>
+        </div>
+        
+        <div class="filter-group">
+          <label>Search Tags</label>
+          <input type="text" id="filterTags" placeholder="e.g., modern, cozy">
+        </div>
+      </div>
+    </div>
+    
+    <div id="stimuliContainer">
+      <div class="loading">
+        <div class="spinner"></div>
+        <p>Loading stimuli...</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+
+    var experiments = [];
+
+    (function() {
+      var API_BASE = 'http://localhost:5000/api';
+      var allStimuli = [];
+      var filteredStimuli = [];
+
+      function authHeader() {
+        var token = localStorage.getItem('jwt');
+        var headers = {};
+        if (token) {
+          headers['Authorization'] = 'Bearer ' + token;
+        }
+        return headers;
+      } 
+
+      async function devLogin() {
+        try {
+          const resp = await fetch(`${API_BASE}/auth/dev_issue_token`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ role: 'researcher', sub: 'dev-user' })
+          });
+          if (!resp.ok) throw new Error('Dev login failed');
+          const data = await resp.json();
+          localStorage.setItem('jwt', data.token);
+          alert('Dev login succeeded!');
+          window.location.reload();
+        } catch (err) {
+          console.error(err);
+          alert('Dev login error: ' + err.message);
+        }
+      }
+
+      async function loadExperimentsForLibrary() {
+        try {
+          const resp = await fetch(`${API_BASE}/experiments/all`, {
+            headers: authHeader()
+          });
+          if (!resp.ok) throw new Error('Failed to load experiments');
+          const data = await resp.json();
+          experiments = data.experiments || [];
+
+          const filterSelect = document.getElementById('experimentFilterSelect');
+          const targetSelect = document.getElementById('experimentTargetSelect');
+          const targetExpId = targetSelect.value;
+
+          // Clear existing options
+          filterSelect.innerHTML = '<option value="">All experiments</option>';
+          targetSelect.innerHTML = '<option value="">Select target…</option>';
+
+          experiments.forEach(exp => {
+            const opt1 = document.createElement('option');
+            opt1.value = exp.experiment_id;
+            opt1.textContent = exp.name || '(untitled experiment)';
+            filterSelect.appendChild(opt1);
+
+            const opt2 = document.createElement('option');
+            opt2.value = exp.experiment_id;
+            opt2.textContent = exp.name || '(untitled experiment)';
+            targetSelect.appendChild(opt2);
+          });
+        } catch (err) {
+          console.error(err);
+          alert('Error loading experiments for stimulus library: ' + err.message);
+        }
+      }
+
+      document.addEventListener('DOMContentLoaded', () => {
+        loadExperimentsForLibrary();
+        loadStimuli();  // existing function that fills the grid/list
+
+        const experimentSelect = document.getElementById('experimentFilterSelect');
+        experimentSelect.addEventListener('change', () => {
+          const experimentId = experimentSelect.value;
+          if (experimentId) {
+            filteredStimuli = allStimuli.filter(s => s.experiment_id === experimentId);
+          } else {
+            filteredStimuli = allStimuli.slice();
+          }
+          renderStimuli();
+        });
+
+        const uploadBtn = document.getElementById('uploadBtn');
+        const fileInput = document.getElementById('fileInput');
+
+        uploadBtn.addEventListener('click', () => {
+          fileInput.click();
+        });
+
+        fileInput.addEventListener('change', () => {
+          handleUpload(fileInput.files);
+          fileInput.value = '';
+        });
+        });
+
+      async function loadStimuli() {
+        try {
+          const resp = await fetch(`${API_BASE}/stimuli`, { headers: authHeader() });
+          if (!resp.ok) {
+            let msg = resp.status + ' ' + resp.statusText;
+            try {
+              const errBody = await resp.json();
+              if (errBody && errBody.error) msg += ' – ' + errBody.error;
+            } catch (e) {
+              // ignore JSON parse error
+            }
+            throw new Error(msg);
+          }
+
+          const data = await resp.json();
+          allStimuli = data.stimuli || [];
+
+          const experimentId = document.getElementById('experimentFilterSelect').value;
+          if (experimentId) {
+            filteredStimuli = allStimuli.filter(s => s.experiment_id === experimentId);
+          } else {
+            filteredStimuli = allStimuli.slice();
+          }
+
+          renderStimuli();
+        } catch (err) {
+          console.error('loadStimuli error:', err);
+          alert('Failed to load stimuli: ' + err.message);
+        }
+      }
+
+    function renderStimuli() {
+      var container = document.getElementById('stimuliContainer');
+
+      if (!filteredStimuli || filteredStimuli.length === 0) {
+        container.innerHTML =
+          '<div class="empty-state"><div class="empty-state-icon">🖼️</div>' +
+          '<p>No stimuli found. Upload some images to get started!</p></div>';
+        return;
+      }
+
+      container.innerHTML = '<div class="stimuli-grid" id="stimuliGrid"></div>';
+      var grid = document.getElementById('stimuliGrid');
+
+      for (let i = 0; i < filteredStimuli.length; i++) {
+        const stimulus = filteredStimuli[i];
+        const card = createStimulusCard(stimulus);
+        grid.appendChild(card);
+      }
+    }
+
+      async function reassignStimulus(stimulusId, newExperimentId) {
+        console.log('Reassigning stimulus', stimulusId, '→', newExperimentId);
+
+        try {
+          const resp = await fetch(
+            `${API_BASE}/stimuli/${encodeURIComponent(stimulusId)}/assign_experiment`,
+            {
+              method: 'PATCH',
+              headers: {
+                ...authHeader(),
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ experiment_id: newExperimentId })
+            }
+          );
+
+          if (!resp.ok) {
+            let msg = resp.status + ' ' + resp.statusText;
+            try {
+              const errData = await resp.json();
+              if (errData && errData.error) msg += ' – ' + errData.error;
+            } catch (e) {
+              // ignore parse error
+            }
+            console.error('Reassign failed:', msg);
+            alert('Failed to move stimulus: ' + msg);
+            return;
+          }
+
+          const data = await resp.json();
+          const updated = data.stimulus;
+          console.log('Reassign success:', updated);
+
+          // Update local arrays
+          const idx = allStimuli.findIndex(s => s.stimulus_id === stimulusId);
+          if (idx !== -1) allStimuli[idx] = updated;
+
+          const currentExp = document.getElementById('experimentFilterSelect').value;
+          if (currentExp) {
+            filteredStimuli = allStimuli.filter(s => s.experiment_id === currentExp);
+          } else {
+            filteredStimuli = allStimuli.slice();
+          }
+
+          renderStimuli();
+          alert('Stimulus moved to the selected experiment.');
+        } catch (err) {
+          console.error('Unexpected error while moving stimulus:', err);
+          alert('Unexpected error while moving stimulus: ' + err.message);
+        }
+      }
+
+
+      function createStimulusCard(stimulus) {
+        var card = document.createElement('div');
+        card.className = 'stimulus-card';
+        card.id = 'stimulus-' + stimulus.stimulus_id;
+        
+        var img = document.createElement('img');
+        img.src = stimulus.url;
+        img.alt = stimulus.filename;
+        img.className = 'stimulus-image';
+        card.appendChild(img);
+        
+        var info = document.createElement('div');
+        info.className = 'stimulus-info';
+        
+        var filename = document.createElement('div');
+        filename.className = 'stimulus-filename';
+        filename.textContent = stimulus.filename;
+        info.appendChild(filename);
+        
+        var roomOptions = [
+          {value: '', label: 'Not set'}, {value: 'living', label: 'Living Room'},
+          {value: 'bedroom', label: 'Bedroom'}, {value: 'kitchen', label: 'Kitchen'},
+          {value: 'office', label: 'Office'}, {value: 'bathroom', label: 'Bathroom'}
+        ];
+        info.appendChild(createSelectField(stimulus, 'roomType', 'Room Type', roomOptions, stimulus.room_type));
+        
+        var curvOptions = [
+          {value: '', label: 'Not set'}, {value: 'high', label: 'High'},
+          {value: 'medium', label: 'Medium'}, {value: 'low', label: 'Low'}, {value: 'none', label: 'None'}
+        ];
+        info.appendChild(createSelectField(stimulus, 'curvature', 'Curvature Level', curvOptions, stimulus.curvature_level));
+        
+        var brightOptions = [
+          {value: '', label: 'Not set'}, {value: 'bright', label: 'Bright'},
+          {value: 'medium', label: 'Medium'}, {value: 'dark', label: 'Dark'}
+        ];
+        info.appendChild(createSelectField(stimulus, 'brightness', 'Brightness', brightOptions, stimulus.brightness));
+        
+        var hueOptions = [
+          {value: '', label: 'Not set'}, {value: 'warm', label: 'Warm'},
+          {value: 'cool', label: 'Cool'}, {value: 'neutral', label: 'Neutral'}
+        ];
+        info.appendChild(createSelectField(stimulus, 'hue', 'Hue', hueOptions, stimulus.hue));
+        
+        info.appendChild(createTagsField(stimulus));
+        info.appendChild(createCardActions(stimulus));
+        
+        card.appendChild(info);
+        return card;
+      }
+
+      function createSelectField(stimulus, fieldId, labelText, options, currentValue) {
+        var field = document.createElement('div');
+        field.className = 'form-field';
+        
+        var labelEl = document.createElement('label');
+        labelEl.textContent = labelText;
+        field.appendChild(labelEl);
+        
+        var select = document.createElement('select');
+        select.id = fieldId + '-' + stimulus.stimulus_id;
+        
+        for (var i = 0; i < options.length; i++) {
+          var option = document.createElement('option');
+          option.value = options[i].value;
+          option.textContent = options[i].label;
+          if (currentValue === options[i].value) option.selected = true;
+          select.appendChild(option);
+        }
+        
+        select.addEventListener('change', (function(id) {
+          return function() { markDirty(id); };
+        })(stimulus.stimulus_id));
+        
+        field.appendChild(select);
+        return field;
+      }
+
+      function createTagsField(stimulus) {
+        var field = document.createElement('div');
+        field.className = 'form-field';
+        
+        var label = document.createElement('label');
+        label.textContent = 'Tags';
+        field.appendChild(label);
+        
+        var tagsContainer = document.createElement('div');
+        tagsContainer.className = 'tags-container';
+        tagsContainer.id = 'tags-' + stimulus.stimulus_id;
+        
+        if (stimulus.tags && stimulus.tags.length > 0) {
+          for (var i = 0; i < stimulus.tags.length; i++) {
+            tagsContainer.appendChild(createTagElement(stimulus.stimulus_id, stimulus.tags[i]));
+          }
+        }
+        
+        field.appendChild(tagsContainer);
+        
+        var tagInput = document.createElement('div');
+        tagInput.className = 'tag-input';
+        
+        var input = document.createElement('input');
+        input.type = 'text';
+        input.id = 'tagInput-' + stimulus.stimulus_id;
+        input.placeholder = 'Add tag...';
+        input.addEventListener('keypress', (function(id) {
+          return function(e) {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              addTag(id);
+            }
+          };
+        })(stimulus.stimulus_id));
+        
+        var addBtn = document.createElement('button');
+        addBtn.className = 'btn btn-small';
+        addBtn.textContent = 'Add';
+        addBtn.addEventListener('click', (function(id) {
+          return function() { addTag(id); };
+        })(stimulus.stimulus_id));
+        
+        tagInput.appendChild(input);
+        tagInput.appendChild(addBtn);
+        field.appendChild(tagInput);
+        
+        return field;
+      }
+
+      function createTagElement(stimulusId, tag) {
+        var tagEl = document.createElement('span');
+        tagEl.className = 'tag';
+        tagEl.textContent = tag;
+        
+        var removeBtn = document.createElement('span');
+        removeBtn.className = 'tag-remove';
+        removeBtn.textContent = '×';
+        removeBtn.addEventListener('click', (function(id, t) {
+          return function() { removeTag(id, t); };
+        })(stimulusId, tag));
+        
+        tagEl.appendChild(removeBtn);
+        return tagEl;
+      }
+
+      function createCardActions(stimulus) {
+        var actions = document.createElement('div');
+        actions.className = 'card-actions';
+
+        // 🤖 Auto-tag button
+        var autoTagBtn = document.createElement('button');
+        autoTagBtn.className = 'btn btn-small';
+        autoTagBtn.textContent = '🤖 Auto-tag';
+        autoTagBtn.addEventListener('click', () =>
+          autoTag(stimulus.stimulus_id, autoTagBtn)
+        );
+
+        // 💾 Save button
+        var saveBtn = document.createElement('button');
+        saveBtn.className = 'btn btn-small';
+        saveBtn.id = 'saveBtn-' + stimulus.stimulus_id;
+        saveBtn.textContent = '💾 Save';
+        saveBtn.disabled = true;
+        saveBtn.addEventListener('click', () => saveStimulus(stimulus.stimulus_id));
+
+        // 🔁 Move to selected experiment
+        var moveBtn = document.createElement('button');
+        moveBtn.className = 'btn btn-small btn-move';
+        moveBtn.textContent = 'Move to selected experiment';
+        moveBtn.addEventListener('click', () => {
+          const targetExpId = document.getElementById('experimentTargetSelect').value;
+          if (!targetExpId) {
+            alert('Choose a target experiment in "Move images to" first.');
+            return;
+          }
+          reassignStimulus(stimulus.stimulus_id, targetExpId);
+        });
+
+        actions.appendChild(autoTagBtn);
+        actions.appendChild(saveBtn);
+        actions.appendChild(moveBtn);
+        return actions;
+      }
+
+
+      function markDirty(stimulusId) {
+        var saveBtn = document.getElementById('saveBtn-' + stimulusId);
+        saveBtn.disabled = false;
+        saveBtn.style.background = '#48bb78';
+      }
+
+      function findStimulus(stimulusId) {
+        for (var i = 0; i < allStimuli.length; i++) {
+          if (allStimuli[i].stimulus_id === stimulusId) return allStimuli[i];
+        }
+        return null;
+      }
+
+      function addTag(stimulusId) {
+        var input = document.getElementById('tagInput-' + stimulusId);
+        var tag = input.value.trim();
+        if (!tag) return;
+        
+        var stimulus = findStimulus(stimulusId);
+        if (!stimulus) return;
+        if (!stimulus.tags) stimulus.tags = [];
+        
+        var exists = false;
+        for (var i = 0; i < stimulus.tags.length; i++) {
+          if (stimulus.tags[i] === tag) {
+            exists = true;
+            break;
+          }
+        }
+        
+        if (!exists) {
+          stimulus.tags.push(tag);
+          input.value = '';
+          
+          var tagsContainer = document.getElementById('tags-' + stimulusId);
+          tagsContainer.innerHTML = '';
+          for (var i = 0; i < stimulus.tags.length; i++) {
+            tagsContainer.appendChild(createTagElement(stimulusId, stimulus.tags[i]));
+          }
+          markDirty(stimulusId);
+        }
+      }
+
+      function removeTag(stimulusId, tagToRemove) {
+        var stimulus = findStimulus(stimulusId);
+        if (!stimulus) return;
+        
+        var newTags = [];
+        for (var i = 0; i < stimulus.tags.length; i++) {
+          if (stimulus.tags[i] !== tagToRemove) newTags.push(stimulus.tags[i]);
+        }
+        stimulus.tags = newTags;
+        
+        var tagsContainer = document.getElementById('tags-' + stimulusId);
+        tagsContainer.innerHTML = '';
+        for (var i = 0; i < stimulus.tags.length; i++) {
+          tagsContainer.appendChild(createTagElement(stimulusId, stimulus.tags[i]));
+        }
+        markDirty(stimulusId);
+      }
+
+      function autoTag(stimulusId, btn) {
+        const originalText = btn.textContent;
+        btn.textContent = '⏳ Analyzing...';
+        btn.disabled = true;
+        
+        fetch(`${API_BASE}/stimuli/${stimulusId}/auto_tag`, {
+          method: 'POST',
+          headers: authHeader()
+        })
+        .then(resp => {
+          if (!resp.ok) throw new Error('Auto-tagging failed');
+          return resp.json();
+        })
+        .then(data => {
+          const stimulus = findStimulus(stimulusId);
+          if (!stimulus) return;
+          if (!stimulus.tags) stimulus.tags = [];
+          
+          const newTags = data.tags || [];
+          newTags.forEach(t => {
+            if (!stimulus.tags.includes(t)) stimulus.tags.push(t);
+          });
+          
+          const tagsContainer = document.getElementById('tags-' + stimulusId);
+          tagsContainer.innerHTML = '';
+          stimulus.tags.forEach(t => tagsContainer.appendChild(createTagElement(stimulusId, t)));
+          markDirty(stimulusId);
+          
+          btn.textContent = '✓ Tagged!';
+          setTimeout(() => {
+            btn.textContent = originalText;
+            btn.disabled = false;
+          }, 2000);
+        })
+        .catch(err => {
+          console.error('Auto-tag error:', err);
+          alert('Auto-tagging failed: ' + err.message);
+          btn.textContent = originalText;
+          btn.disabled = false;
+        });
+      }
+
+      function saveStimulus(stimulusId) {
+        var saveBtn = document.getElementById('saveBtn-' + stimulusId);
+        var originalText = saveBtn.textContent;
+        saveBtn.textContent = '⏳ Saving...';
+        saveBtn.disabled = true;
+        
+        var stimulus = findStimulus(stimulusId);
+        if (!stimulus) return;
+        
+        var roomType = document.getElementById('roomType-' + stimulusId).value;
+        var curvature = document.getElementById('curvature-' + stimulusId).value;
+        var brightness = document.getElementById('brightness-' + stimulusId).value;
+        var hue = document.getElementById('hue-' + stimulusId).value;
+        
+        var headers = authHeader();
+        headers['Content-Type'] = 'application/json';
+        
+        fetch(API_BASE + '/stimuli/' + stimulusId, {
+          method: 'PUT',
+          headers: headers,
+          body: JSON.stringify({
+            room_type: roomType,
+            curvature_level: curvature,
+            brightness: brightness,
+            hue: hue,
+            tags: stimulus.tags
+          })
+        })
+        .then(function(response) {
+          if (!response.ok) throw new Error('Save failed');
+          
+          stimulus.room_type = roomType;
+          stimulus.curvature_level = curvature;
+          stimulus.brightness = brightness;
+          stimulus.hue = hue;
+          
+          saveBtn.textContent = '✓ Saved!';
+          saveBtn.style.background = '#48bb78';
+          
+          setTimeout(function() {
+            saveBtn.textContent = originalText;
+            saveBtn.disabled = true;
+            saveBtn.style.background = '';
+          }, 2000);
+        })
+        .catch(function(error) {
+          console.error('Save error:', error);
+          alert('Save failed: ' + error.message);
+          saveBtn.textContent = originalText;
+          saveBtn.disabled = false;
+        });
+      }
+
+      function applyFilters() {
+        var roomType = document.getElementById('filterRoomType').value;
+        var curvature = document.getElementById('filterCurvature').value;
+        var brightness = document.getElementById('filterBrightness').value;
+        var hue = document.getElementById('filterHue').value;
+        var tagSearch = document.getElementById('filterTags').value.toLowerCase();
+        
+        filteredStimuli = [];
+        
+        for (var i = 0; i < allStimuli.length; i++) {
+          var stimulus = allStimuli[i];
+          var include = true;
+          
+          if (roomType && stimulus.room_type !== roomType) include = false;
+          if (curvature && stimulus.curvature_level !== curvature) include = false;
+          if (brightness && stimulus.brightness !== brightness) include = false;
+          if (hue && stimulus.hue !== hue) include = false;
+          
+          if (tagSearch && include) {
+            var hasTag = false;
+            var tags = stimulus.tags || [];
+            for (var j = 0; j < tags.length; j++) {
+              if (tags[j].toLowerCase().indexOf(tagSearch) !== -1) {
+                hasTag = true;
+                break;
+              }
+            }
+            if (!hasTag) include = false;
+          }
+          
+          if (include) filteredStimuli.push(stimulus);
+        }
+        
+        renderStimuli();
+      }
+
+      function handleUpload(files) {
+        if (!files || files.length === 0) return;
+
+        const experimentId = document.getElementById('experimentFilterSelect').value;
+        if (!experimentId) {
+          alert('Please select an experiment before uploading images.');
+          return;
+        }
+
+        const promises = [];
+        for (let i = 0; i < files.length; i++) {
+          const file = files[i];
+          const formData = new FormData();
+          formData.append('file', file);
+          formData.append('experiment_id', experimentId);
+
+          const p = fetch(`${API_BASE}/stimuli/upload`, {
+            method: 'POST',
+            headers: authHeader(),   // DO NOT set Content-Type manually with FormData
+            body: formData
+          }).then(async resp => {
+            if (!resp.ok) {
+              const err = await resp.json().catch(() => ({}));
+              throw new Error(err.error || 'Upload failed');
+            }
+            return resp.json();
+          });
+
+          promises.push(p);
+        }
+
+        Promise.all(promises)
+          .then(() => {
+            alert('Upload complete');
+            loadStimuli(); // refresh view
+          })
+          .catch(err => {
+            console.error(err);
+            alert('One or more uploads failed: ' + err.message);
+          });
+      }
+
+      document.getElementById('uploadBtn').addEventListener('click', function() {
+        document.getElementById('fileInput').click();
+      });
+
+      document.getElementById('fileInput').addEventListener('change', function(e) {
+        handleUpload(e.target.files);
+      });
+
+      document.getElementById('filterRoomType').addEventListener('change', applyFilters);
+      document.getElementById('filterCurvature').addEventListener('change', applyFilters);
+      document.getElementById('filterBrightness').addEventListener('change', applyFilters);
+      document.getElementById('filterHue').addEventListener('change', applyFilters);
+      document.getElementById('filterTags').addEventListener('input', applyFilters);
+    })();
+  </script>
+</body>
+</html>

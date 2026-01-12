@@ -1,0 +1,773 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Experiment Admin - Login & Dashboard</title>
+  <style>
+
+    .top-nav {
+        display:flex;
+        align-items:center;
+        justify-content:space-between;
+        padding:12px 24px;
+        background:#0b1020;
+        border-bottom:1px solid #2a3359;
+    }
+    .nav-logo {
+        font-weight:700;
+        letter-spacing:0.05em;
+    }
+    .nav-links a {
+        margin:0 8px;
+        color:#e8ecff;
+        text-decoration:none;
+        font-size:14px;
+    }
+    .nav-links a:hover,
+    .nav-links a:focus {
+        text-decoration:underline;
+    }
+    .nav-right .btn {
+        padding:8px 12px;
+        border-radius:999px;
+    } 
+
+    :root {
+      --bg:#0b1020; --panel:#121a35; --border:#2a3359;
+      --muted:#9aa3c7; --accent:#667eea;
+    }
+    html, body {
+      margin:0;
+      background: var(--bg);
+      color: #e8ecff;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    }
+    a { color: var(--accent); }
+
+    .container { max-width: 1200px; margin: 0 auto; padding: 32px; }
+
+    /* ===== LOGIN VIEW ===== */
+    .login-card {
+      max-width: 420px;
+      margin: 80px auto;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 28px 26px 24px;
+      box-shadow: 0 18px 40px rgba(0,0,0,0.5);
+    }
+    .login-card h1 {
+      margin:0 0 8px 0;
+      font-size: 26px;
+      font-weight: 800;
+      letter-spacing:.2px;
+    }
+    .login-sub {
+      color: var(--muted);
+      margin-bottom: 24px;
+      font-size: 14px;
+    }
+    .form-group {
+      margin-bottom: 18px;
+    }
+    .form-group label {
+      display:block;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      margin-bottom: 6px;
+      color: var(--muted);
+    }
+    .form-group input {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: #090d1a;
+      color: #e8ecff;
+      font-size: 14px;
+    }
+    .form-group input:focus {
+      outline: 2px solid var(--accent);
+      outline-offset: 1px;
+    }
+    .btn {
+      background: #667eea;
+      border: 1px solid #5364d4;
+      color: white;
+      padding: 10px 14px;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      text-decoration: none;
+      display:inline-block;
+      transition: transform .06s ease, box-shadow .06s ease, background .15s ease;
+    }
+    .btn:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4); } 
+    .btn-full { width: 100%; text-align:center; }
+    .btn-secondary {
+      background: transparent;
+      border-color: var(--border);
+      color: #e8ecff;
+    }
+    .login-footer {
+      margin-top: 14px;
+      font-size: 12px;
+      color: var(--muted);
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap: 8px;
+      flex-wrap:wrap;
+    }
+    .login-error {
+      margin-top: 8px;
+      font-size: 13px;
+      color: #fc8181;
+      min-height: 18px;
+    }
+
+    /* ===== ADMIN VIEW ===== */
+    .header {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      margin-bottom: 24px;
+    }
+    h1 {
+      margin:0;
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing:.2px;
+    }
+    .header-actions {
+      display:flex;
+      gap: 10px;
+      flex-wrap:wrap;
+    }
+    .content {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 20px;
+      margin-bottom: 24px;
+    }
+    table { width:100%; border-collapse: collapse; margin-top: 12px; }
+    th, td {
+      text-align:left;
+      padding: 12px 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    th {
+      color:#cdd5ff;
+      font-weight:700;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing:.06em;
+    }
+    td { color:#e8ecff; font-size: 15px;}
+    .status {
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size:12px;
+      font-weight:700;
+    }
+    .status-active {
+      background: rgba(102,126,234,0.18);
+      border: 1px solid #667eea;
+      color:#dbe1ff;
+    }
+    .status-draft {
+      background: rgba(255,255,255,0.08);
+      border: 1px solid var(--border);
+      color:#dcdff0;
+    }
+    .status-archived{
+      background: rgba(154,163,199,0.12);
+      border: 1px solid #4b546f;
+      color:#9aa3c7;
+    }
+    .actions-cell a.btn {
+      margin-right: 4px;
+      margin-bottom: 4px;
+    }
+    .muted {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .docs-section {
+      margin-top: 2rem;
+    }
+
+    .docs-collapse {
+      margin-bottom: 0.75rem;
+      border-radius: 8px;
+      border: 1px solid var(--border-subtle, #444);
+      background: var(--bg-elevated, #111);
+    }
+
+    .docs-collapse > summary {
+      cursor: pointer;
+      padding: 0.5rem 0.75rem;
+      font-weight: 500;
+      list-style: none;
+    }
+
+    .docs-collapse > summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .docs-collapse > summary::before {
+      content: "▾";
+      display: inline-block;
+      margin-right: 0.5rem;
+      transition: transform 0.15s ease-out;
+    }
+
+    .docs-collapse[open] > summary::before {
+      transform: rotate(0deg);
+    }
+
+    .docs-collapse:not([open]) > summary::before {
+      transform: rotate(-90deg);
+    }
+
+    .docs-preview {
+      padding: 0.5rem 0.75rem 0.75rem 0.75rem;
+    }
+
+    .docs-frame {
+      width: 100%;
+      height: 220px;     /* smaller height */
+      max-width: 100%;
+      border: 1px solid #333;
+      border-radius: 6px;
+      background: #000;
+    }
+
+    .docs-upload-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      margin-top: 0.75rem;
+    }
+
+    .docs-upload {
+      flex: 1 1 260px;
+    }
+
+    .docs-label {
+      display: block;
+      font-size: 0.9rem;
+      margin-bottom: 0.25rem;
+    }
+
+    /* Toasts */
+    .toast-container {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      z-index: 10001;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      max-width: 400px;
+    }
+    .toast {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px 20px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      animation: slideIn 0.3s ease;
+      border-left: 4px solid var(--accent);
+      color: #e8ecff;
+    }
+    .toast.success { border-left-color: #48bb78; }
+    .toast.error   { border-left-color: #fc8181; }
+    .toast.warning { border-left-color: #f6ad55; }
+    .toast-icon { font-size: 1.5em; }
+    .toast-content { flex: 1; }
+    .toast-title { font-weight: 600; margin-bottom: 4px; }
+    .toast-message { font-size: 0.9em; opacity: 0.8; }
+    .toast-close {
+      background: none;
+      border: none;
+      color: inherit;
+      cursor: pointer;
+      padding: 0;
+      width: 24px;
+      height: 24px;
+    }
+    @keyframes slideIn {
+      from { transform: translateX(400px); opacity: 0; }
+      to   { transform: translateX(0);     opacity: 1; }
+    }
+
+    @media (max-width: 720px) {
+      .header { flex-direction:column; align-items:flex-start; gap:10px; }
+      .header-actions { width:100%; }
+      .header-actions .btn { flex:1; text-align:center; }
+      table { font-size: 13px; }
+      .actions-cell a.btn { display:block; width:100%; }
+    }
+  </style>
+</head>
+<body>
+  <div id="toastContainer" class="toast-container"></div>
+
+  <header class="top-nav">
+    <div class="nav-left">
+      <span class="nav-logo">Adaptive Preference</span>
+    </div>
+    <nav class="nav-links" aria-label="Main navigation">
+      <a href="admin_PATCHED.html">Admin Home</a>
+      <a href="experimenter_dashboard_improved.html">Experiment Builder</a>
+      <a href="stimulus_library.html">Stimulus Library</a>
+    </nav>
+    <div class="nav-right">
+      <button type="button" class="btn btn-secondary" onclick="devLogin()">Dev Login</button>
+      <button class="btn" type="submit">Log in</button>
+    </div>
+  </header>
+
+  <!-- LOGIN VIEW -->
+  <div id="loginView" class="container" style="display:none;">
+    <div class="login-card">
+      <h1>Admin Login</h1>
+      <p class="login-sub">
+        Sign in to manage stimuli, experiments, and results for the adaptive preference study.
+      </p>
+      <div class="form-group">
+        <label for="loginEmail">Email</label>
+        <input id="loginEmail" type="email" autocomplete="email" placeholder="you@lab.ucsd.edu"/>
+      </div>
+      <div class="form-group">
+        <label for="loginPassword">Password</label>
+        <input id="loginPassword" type="password" autocomplete="current-password" placeholder="••••••••"/>
+      </div>
+      <button class="btn btn-full" onclick="handleLogin()" id="loginButton">Log in</button>
+      <div id="loginError" class="login-error"></div>
+
+      <div class="login-footer">
+        <span>Need access? Contact the PI or system admin.</span>
+        <button class="btn btn-secondary" type="button" onclick="devLogin()">Dev login</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ADMIN HOME VIEW -->
+  <div id="adminView" class="container" style="display:none;">
+    <div class="header">
+      <div>
+        <h1>Experiment Admin Dashboard</h1>
+        <div class="muted">Manage experiment templates, subjects, and results.</div>
+      </div>
+      <div class="header-actions">
+        <a class="btn" href="experimenter_dashboard_improved.html">+ Create New Experiment</a>
+        <a class="btn btn-secondary" href="stimulus_library.html">Manage Stimuli</a>
+        <button class="btn btn-secondary" type="button" onclick="logout()">Logout</button>
+      </div>
+    </div>
+
+    <div class="content">
+      <h2 style="margin-top:0; font-size:18px;">All Experiments</h2>
+      <p class="muted" style="margin-top:4px;">
+        Click "New subject session” to open the subject interface, or “View results” for the results dashboard.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Experiment Name</th>
+            <th>Status</th>
+            <th>Created</th>
+            <th>Subjects</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="exp-table-body"></tbody>
+      </table>
+    </div>
+
+    <!-- Consent / Debrief management -->
+<section class="docs-section">
+  <h3>Consent & Debrief</h3>
+
+  <!-- Consent block -->
+  <details class="docs-collapse" open>
+    <summary>Consent document (click to expand/collapse)</summary>
+    <div class="docs-preview">
+      <iframe
+        id="consentFrame"
+        class="docs-frame"
+        title="Consent preview"
+      ></iframe>
+    </div>
+  </details>
+
+  <!-- Debrief block -->
+  <details class="docs-collapse" open>
+    <summary>Debrief document (click to expand/collapse)</summary>
+    <div class="docs-preview">
+      <iframe
+        id="debriefFrame"
+        class="docs-frame"
+        title="Debrief preview"
+      ></iframe>
+    </div>
+  </details>
+
+  <!-- Upload controls (can sit below or above, your choice) -->
+  <div class="docs-upload-row">
+    <div class="docs-upload">
+      <label class="docs-label">Upload consent (.pdf or .html)</label>
+      <input id="consentFile" type="file" accept=".pdf,.html" />
+      <button class="btn btn-secondary" type="button" onclick="uploadConsent()">Upload consent</button>
+    </div>
+    <div class="docs-upload">
+      <label class="docs-label">Upload debrief (.pdf or .html)</label>
+      <input id="debriefFile" type="file" accept=".pdf,.html" />
+      <button class="btn btn-secondary" type="button" onclick="uploadDebrief()">Upload debrief</button>
+      </div>
+    </div>
+  </section>
+
+  <script>
+    const API_BASE = 'http://localhost:5000/api';
+
+    function authHeader() {
+      const t = localStorage.getItem('jwt');
+      return t ? { 'Authorization':'Bearer '+t } : {};
+    }
+
+    async function devLogin() {
+      try {
+        const resp = await fetch('http://localhost:5000/api/auth/dev_issue_token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ role: 'researcher', sub: 'dev-user' })
+        });
+
+        const data = await resp.json();
+        if (!resp.ok) {
+          alert('Login failed: ' + (data.error || JSON.stringify(data)));
+          return;
+        }
+
+        localStorage.setItem('jwt', data.token);
+        alert('Logged in as ' + data.role);
+      } catch (err) {
+        console.error(err);
+        alert('Login error: ' + err.message);
+      }
+    }
+
+    function showToast(title, message, type='info') {
+      const container = document.getElementById('toastContainer');
+      if (!container) return;
+      const toast = document.createElement('div');
+      toast.className = 'toast ' + type;
+      const icons = { success:'✓', error:'✗', warning:'⚠', info:'ℹ' };
+      toast.innerHTML = `
+        <span class="toast-icon">${icons[type] || 'ℹ'}</span>
+        <div class="toast-content">
+          <div class="toast-title">${title}</div>
+          <div class="toast-message">${message}</div>
+        </div>
+        <button class="toast-close" onclick="this.parentElement.remove()">×</button>
+      `;
+      container.appendChild(toast);
+      setTimeout(() => toast.remove(), 5000);
+    }
+
+    function showLogin() {
+      document.getElementById('loginView').style.display = 'block';
+      document.getElementById('adminView').style.display = 'none';
+    }
+
+    function showAdmin() {
+      document.getElementById('loginView').style.display = 'none';
+      document.getElementById('adminView').style.display = 'block';
+      loadExperiments();
+    }
+
+    async function handleLogin() {
+      const email = document.getElementById('loginEmail').value.trim();
+      const password = document.getElementById('loginPassword').value;
+      const btn = document.getElementById('loginButton');
+      const errorBox = document.getElementById('loginError');
+      errorBox.textContent = '';
+
+      if (!email || !password) {
+        errorBox.textContent = 'Email and password are required.';
+        return;
+      }
+
+      btn.disabled = true;
+      btn.textContent = 'Logging in…';
+
+      try {
+        const resp = await fetch(`${API_BASE}/auth/login`, {
+          method:'POST',
+          headers:{ 'Content-Type':'application/json' },
+          body: JSON.stringify({ email, password })
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          throw new Error(data.error || 'Login failed');
+        }
+        if (!data.token) {
+          throw new Error('No token returned from server');
+        }
+        localStorage.setItem('jwt', data.token);
+        showToast('Welcome', 'Login successful', 'success');
+        showAdmin();
+      } catch (err) {
+        console.error(err);
+        errorBox.textContent = err.message;
+        showToast('Login failed', err.message, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Log in';
+      }
+    }
+
+    function buildParticipantId(exp) {
+      // Base code from experiment name (letters/digits only)
+      const baseRaw = (exp.name || 'EXP').toUpperCase();
+      const baseCode = (baseRaw.replace(/[^A-Z0-9]/g, '').slice(0, 4)) || 'EXP';
+      const expShort = (exp.experiment_id || '').replace(/[^A-Z0-9]/gi, '').slice(0, 4);
+
+      // Next index based on current session_count (1-based)
+      const nextIndex = (exp.session_count || 0) + 1;
+      const padded = String(nextIndex).padStart(3, '0');
+
+      return `${baseCode}-${expShort || 'E'}-P${padded}`;
+    }
+
+    function openSubjectWithId(exp) {
+      const pid = buildParticipantId(exp);
+      const url = `subject_interface_complete.html?exp=${encodeURIComponent(exp.experiment_id)}&sub=${encodeURIComponent(pid)}`;
+      window.open(url, '_blank');
+    }
+
+    async function loadExperiments() {
+      const tableBody = document.getElementById('exp-table-body');
+      tableBody.innerHTML = '<tr><td colspan="5" style="padding:16px;">Loading…</td></tr>';
+      try {
+        const response = await fetch(`${API_BASE}/experiments/all`, {
+          headers: authHeader()
+        });
+        if (!response.ok) throw new Error('Failed to fetch experiments');
+        const data = await response.json();
+        const experiments = data.experiments || [];
+        tableBody.innerHTML = '';
+
+        if (experiments.length === 0) {
+          tableBody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding: 20px;">No experiments found.</td></tr>';
+          return;
+        }
+
+        experiments.forEach(exp => {
+          const row = document.createElement('tr');
+          const createdDate = exp.created_at ?
+            new Date(exp.created_at).toLocaleDateString('en-US', {year:'numeric', month:'short', day:'numeric'}) :
+            '—';
+
+          const statusClass = exp.status === 'active'
+            ? 'status-active'
+            : exp.status === 'draft' ? 'status-draft' : 'status-archived';
+
+          const subjectUrl = `subject_interface_complete.html?exp=${encodeURIComponent(exp.experiment_id)}`;
+
+          row.innerHTML = `
+            <td><strong>${exp.name || '(untitled)'}</strong></td>
+            <td><span class="status ${statusClass}">${exp.status || 'unknown'}</span></td>
+            <td>${createdDate}</td>
+            <td>${exp.session_count || 0}</td>
+            <td class="actions-cell">
+              <button class="btn btn-new" type="button">New subject session</button>
+              <a class="btn btn-secondary" href="experimenter_dashboard_improved.html?experiment_id=${encodeURIComponent(exp.experiment_id)}">Edit template</a>
+              <a class="btn btn-secondary" href="results_dashboard.html?exp=${encodeURIComponent(exp.experiment_id)}">View results</a>
+              <button class="btn btn-secondary btn-archive" type="button">Archive</button>
+              <button class="btn btn-secondary btn-delete" type="button">Delete</button>
+            </td>
+          `;
+          tableBody.appendChild(row);
+          
+          const newBtn = row.querySelector('.btn-new');
+          newBtn.addEventListener('click', () => openSubjectWithId(exp));
+
+          // Archive button
+          const archiveBtn = row.querySelector('.btn-archive');
+          archiveBtn.addEventListener('click', () => archiveExperiment(exp.experiment_id));
+
+          // Delete button
+          const deleteBtn = row.querySelector('.btn-delete');
+          deleteBtn.addEventListener('click', () => deleteExperiment(exp.experiment_id, true));
+
+        });
+      } catch (error) {
+        console.error(error);
+        tableBody.innerHTML =
+          `<tr><td colspan="5" style="text-align:center; padding: 20px; color: #ffb4b4;">${error.message}</td></tr>`;
+        showToast('Error', error.message, 'error');
+      }
+    }
+
+    async function archiveExperiment(experimentId) {
+      if (!confirm('Archive this experiment? It will disappear from active lists but all data will be kept.')) {
+        return;
+      }
+      try {
+        const resp = await fetch(`${API_BASE}/experiments/${encodeURIComponent(experimentId)}/archive`, {
+          method: 'POST',
+          headers: authHeader()
+        });
+        if (!resp.ok) {
+          const txt = await resp.text();
+          throw new Error(`Archive failed: ${resp.status} ${txt}`);
+        }
+        showToast('Archived', 'Experiment moved to archived status', 'success');
+        loadExperiments();
+      } catch (err) {
+        console.error(err);
+        showToast('Archive failed', err.message, 'error');
+      }
+    }
+
+    /**
+     * deleteData = false → delete design only (backend should keep raw SQL data if you support that)
+     * deleteData = true  → delete design and associated data
+     */
+    async function deleteExperiment(experimentId, deleteData = false) {
+      const msg = deleteData
+        ? 'Delete this experiment AND its associated data? This cannot be undone.'
+        : 'Delete this experiment design but keep its data tables? (Requires backend support.)';
+
+      if (!confirm(msg)) return;
+
+      try {
+        const qs = deleteData ? '?delete_data=1' : '';
+        const resp = await fetch(`${API_BASE}/experiments/${encodeURIComponent(experimentId)}${qs}`, {
+          method: 'DELETE',
+          headers: authHeader()
+        });
+        if (!resp.ok) {
+          const txt = await resp.text();
+          throw new Error(`Delete failed: ${resp.status} ${txt}`);
+        }
+        showToast('Deleted', 'Experiment removed', 'success');
+        loadExperiments();
+      } catch (err) {
+        console.error(err);
+        showToast('Delete failed', err.message, 'error');
+      }
+    }
+
+
+    function logout() {
+      localStorage.removeItem('jwt');
+      showToast('Logged out', 'Session cleared', 'info');
+      showLogin();
+    }
+
+    // Dev login (kept, but now clearly a shortcut)
+    async function devLogin() {
+      try {
+        const resp = await fetch(`${API_BASE}/auth/dev_issue_token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ role: 'researcher', sub: 'dev-user' })
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          alert('Dev login failed: ' + (data.error || JSON.stringify(data)));
+          return;
+        }
+        localStorage.setItem('jwt', data.token);
+        showToast('Dev login', 'Issued dev token for researcher role', 'success');
+        showAdmin();
+      } catch (err) {
+        console.error(err);
+        alert('Dev login error: ' + err.message);
+      }
+    }
+
+function refreshConsentPreview() {
+  document.getElementById('consentFrame').src = `${API_BASE.replace('/api','')}/api/consent?ts=${Date.now()}`;
+}
+
+function refreshDebriefPreview() {
+  document.getElementById('debriefFrame').src = `${API_BASE.replace('/api','')}/api/debrief?ts=${Date.now()}`;
+}
+
+async function uploadConsent() {
+  const fileInput = document.getElementById('consentFile');
+  if (!fileInput.files.length) {
+    alert('Please choose a consent file first.');
+    return;
+  }
+  const formData = new FormData();
+  formData.append('file', fileInput.files[0]);
+
+  const resp = await fetch(`${API_BASE}/admin/upload_consent`, {
+    method: 'POST',
+    headers: authHeader(),  // no Content-Type here
+    body: formData
+  });
+  const data = await resp.json();
+  if (!resp.ok || data.error) {
+    alert('Failed to upload consent: ' + (data.error || ''));
+  } else {
+    alert('Consent uploaded.');
+    refreshConsentPreview();
+  }
+}
+
+async function uploadDebrief() {
+  const fileInput = document.getElementById('debriefFile');
+  if (!fileInput.files.length) {
+    alert('Please choose a debrief file first.');
+    return;
+  }
+  const formData = new FormData();
+  formData.append('file', fileInput.files[0]);
+
+  const resp = await fetch(`${API_BASE}/admin/upload_debrief`, {
+    method: 'POST',
+    headers: authHeader(),
+    body: formData
+  });
+  const data = await resp.json();
+  if (!resp.ok || data.error) {
+    alert('Failed to upload debrief: ' + (data.error || ''));
+  } else {
+    alert('Debrief uploaded.');
+    refreshDebriefPreview();
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  refreshConsentPreview();
+  refreshDebriefPreview();
+});
+
+
+    // Initial routing
+    window.addEventListener('DOMContentLoaded', () => {
+      if (localStorage.getItem('jwt')) {
+        showAdmin();
+      } else {
+        showLogin();
+      }
+    });
+  </script>
+</body>
+</html>

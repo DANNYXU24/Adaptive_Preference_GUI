@@ -1,0 +1,19 @@
+# Core Application
+flask
+flask-cors
+flask-sqlalchemy
+flask-limiter
+psycopg2-binary
+sqlalchemy
+werkzeug
+numpy
+scipy
+alembic
+psycopg2
+gunicorn
+
+# Linting/Testing
+flake8
+bandit
+pytest
+pytest-flask

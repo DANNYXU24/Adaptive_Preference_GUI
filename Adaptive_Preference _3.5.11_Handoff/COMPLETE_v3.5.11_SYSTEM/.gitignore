@@ -1,0 +1,35 @@
+# OS cruft
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.env
+*.env
+
+# Runtime data
+backend/uploads/
+*.db
+
+# Editor/IDE
+.vscode/
+.idea/
+.venv/
+backend/venv/
+backend/.env
+backend/venv/
+
+# Node/Electron
+node_modules/
+dist/
+out/
+package-lock.json
+
+# Large Binary files
+*.exe
+*.dll

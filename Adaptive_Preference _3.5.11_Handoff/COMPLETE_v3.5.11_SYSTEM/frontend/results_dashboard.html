@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Results Dashboard</title>
+  <style>
+
+    .top-nav {
+        display:flex;
+        align-items:center;
+        justify-content:space-between;
+        padding:12px 24px;
+        background:#0b1020;
+        border-bottom:1px solid #2a3359;
+    }
+    .nav-logo {
+        font-weight:700;
+        letter-spacing:0.05em;
+    }
+    .nav-links a {
+        margin:0 8px;
+        color:#e8ecff;
+        text-decoration:none;
+        font-size:14px;
+    }
+    .nav-links a:hover,
+    .nav-links a:focus {
+        text-decoration:underline;
+    }
+    .nav-right .btn {
+        padding:8px 12px;
+        border-radius:999px;
+    }
+
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      margin:0;
+      background:#0b1020;
+      color:#e8ecff;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 32px 20px 40px;
+    }
+    h1 { margin: 0 0 6px 0; font-size: 28px; }
+    #expStatus { margin: 0 0 20px 0; color:#9aa3c7;}
+    .card {
+      background: #121a35;
+      border:1px solid #2a3359;
+      border-radius: 16px;
+      padding: 20px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+      margin-bottom: 20px;
+    }
+    .grid {
+      display:grid;
+      grid-template-columns: repeat(4, minmax(0,1fr));
+      gap:16px;
+      margin: 20px 0;
+    }
+    .metric {
+      background:#161d3f;
+      border:1px solid #2a3359;
+      border-radius:12px;
+      padding:14px;
+    }
+    .metric .label {
+      font-size:12px;
+      text-transform:uppercase;
+      letter-spacing: .06em;
+      color:#9aa3c7;
+      margin-bottom:4px;
+    }
+    .metric .value { font-size:24px; font-weight:700; }
+
+    .btn {
+      background: #667eea;
+      color: white;
+      padding: 10px 18px;
+      border-radius: 10px;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 14px;
+      border: 1px solid #5364d4;
+      cursor:pointer;
+      display:inline-block;
+      transition: all 0.2s;
+    }
+    .btn:hover {
+      background:#5568d3;
+      transform: translateY(-2px); 
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4); 
+    }
+
+    .btn-secondary {
+      background: transparent;
+      border-color:#2a3359;
+      color:#e8ecff;
+    }
+    .btn-secondary:hover {
+      background:#161d3f;
+    }
+    .btn-sm { padding:6px 10px; font-size:12px; border-radius: 8px; }
+
+    .filters {
+      display:flex;
+      flex-wrap:wrap;
+      gap:12px;
+      align-items:flex-end;
+      margin-bottom: 10px;
+      margin-top: 10px;
+    }
+    .filters label {
+      font-size:13px;
+      color:#cdd5ff;
+      display:flex;
+      flex-direction:column;
+      gap:4px;
+    }
+    .filters input[type="date"],
+    .filters select {
+      background:#090d1a;
+      color:#e8ecff;
+      border-radius:8px;
+      border:1px solid #2a3359;
+      padding:6px 8px;
+      font-size:13px;
+    }
+    .filters input[type="checkbox"] {
+      margin-right:6px;
+    }
+
+    table {
+      width:100%;
+      border-collapse: collapse;
+      margin-top: 8px;
+      font-size: 13px;
+    }
+    th, td {
+      text-align:left;
+      padding: 8px 8px;
+      border-bottom: 1px solid #2a3359;
+    }
+    th {
+      text-transform: uppercase;
+      letter-spacing:.06em;
+      font-size:11px;
+      color:#9aa3c7;
+    }
+    tbody tr:hover {
+      background:#161d3f;
+    }
+    .pill {
+      padding:4px 8px;
+      border-radius:999px;
+      font-size:11px;
+      font-weight:600;
+      display:inline-block;
+    }
+    .pill-ok {
+      background:rgba(72,187,120,0.12);
+      color:#9ae6b4;
+      border:1px solid rgba(72,187,120,0.5);
+    }
+    .pill-fail {
+      background:rgba(252,129,129,0.12);
+      color:#fed7d7;
+      border:1px solid rgba(252,129,129,0.5);
+    }
+    .muted { color:#9aa3c7; font-size:13px; }
+
+    .section-title {
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:10px;
+      margin-bottom:4px;
+    }
+
+    @media (max-width: 900px) {
+      .grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
+    }
+    @media (max-width: 640px) {
+      .grid { grid-template-columns: repeat(1, minmax(0,1fr)); }
+      table { font-size:12px; }
+      th, td { padding:6px 4px; }
+    }
+  </style>
+</head>
+<body>
+
+  <header class="top-nav">
+    <div class="nav-left">
+      <span class="nav-logo">Adaptive Preference</span>
+    </div>
+    <nav class="nav-links" aria-label="Main navigation">
+      <a href="admin_PATCHED.html">Admin Home</a>
+      <a href="experimenter_dashboard_improved.html">Experiment Builder</a>
+      <a href="stimulus_library.html">Stimulus Library</a>
+    </nav>
+    <div class="nav-right">
+      <button type="button" class="btn btn-secondary" onclick="devLogin()">Dev Login</button>
+    </div>
+  </header>
+
+
+  <div class="container">
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:16px;">
+      <div>
+        <h1 id="expName">Loading Results...</h1>
+        <p id="expStatus"></p>
+      </div>
+      <div style="text-align:right; min-width:220px;">
+        <button id="downloadRawBtn" class="btn btn-sm" style="display:none;">Download Raw CSV</button>
+        <button id="downloadCleanBtn" class="btn btn-sm btn-secondary" style="display:none;">Download Cleaned CSV</button>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="metric">
+        <div class="label">Total Sessions</div>
+        <div class="value" id="m_total_sessions">-</div>
+      </div>
+      <div class="metric">
+        <div class="label">Completed</div>
+        <div class="value" id="m_completed">-</div>
+      </div>
+      <div class="metric">
+        <div class="label">Active</div>
+        <div class="value" id="m_active">-</div>
+      </div>
+      <div class="metric">
+        <div class="label">Total Choices</div>
+        <div class="value" id="m_choices">-</div>
+      </div>
+    </div>
+
+    <!-- Sessions card -->
+    <div class="card">
+      <div class="section-title">
+        <h2 style="font-size:18px; margin:0;">Sessions</h2>
+      </div>
+
+      <div class="filters">
+        <label>
+          Date from
+          <input type="date" id="fromDate">
+        </label>
+        <label>
+          Date to
+          <input type="date" id="toDate">
+        </label>
+        <button id="applyFiltersBtn" class="btn btn-sm btn-secondary" type="button">
+          Apply filters
+        </button>
+      </div>
+
+      <div style="overflow-x:auto; margin-top:8px;">
+        <table>
+          <thead>
+            <tr>
+              <th>Session</th>
+              <th>Participant</th>
+              <th>Started</th>
+              <th>Completed</th>
+            </tr>
+          </thead>
+          <tbody id="sessionsBody">
+            <tr><td colspan="5" class="muted" style="padding:12px;">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Stimuli summary (optional) -->
+    <div class="card" id="stimuliCard" style="display:none;">
+      <div class="section-title">
+        <h2 style="font-size:18px; margin:0;">Stimulus Summary</h2>
+        <span class="muted">Times chosen vs shown</span>
+      </div>
+      <div style="overflow-x:auto; margin-top:8px;">
+        <table>
+          <thead>
+            <tr>
+              <th>Stimulus</th>
+              <th>Shown</th>
+              <th>Chosen</th>
+              <th>Win rate</th>
+            </tr>
+          </thead>
+          <tbody id="stimuliBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = 'http://localhost:5000/api';
+
+    function authHeader() {
+      const t = localStorage.getItem('jwt');
+      return t ? { 'Authorization': 'Bearer ' + t } : {};
+    }
+
+    const state = {
+      rawData: null,
+      filteredSessions: []
+    };
+
+    function formatDateTime(iso) {
+      if (!iso) return '—';
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return '—';
+      return d.toLocaleString();
+    }
+
+    function shortSessionId(session) {
+      // Example: EXP1-S001 style – fall back to truncated UUID if not available
+      if (session.simple_session_id) return session.simple_session_id;
+      if (session.session_id && session.session_id.length > 8) {
+        return 'S…' + session.session_id.slice(-8);
+      }
+      return session.session_id || '—';
+    }
+
+    function shortParticipantId(session) {
+      if (session.participant_id) return session.participant_id;
+      if (session.subject_id) return session.subject_id;
+      return '—';
+    }
+
+    function renderMetrics(summary) {
+      document.getElementById('m_total_sessions').innerText = summary.total_sessions ?? '-';
+      document.getElementById('m_completed').innerText     = summary.completed_sessions ?? '-';
+      document.getElementById('m_active').innerText        = summary.active_sessions ?? '-';
+      document.getElementById('m_choices').innerText       = summary.total_choices ?? '-';
+    }
+
+    function applyFilters() {
+      if (!state.rawData) return;
+      const sessions = state.rawData.sessions || [];
+      const fromVal = document.getElementById('fromDate').value;
+      const toVal   = document.getElementById('toDate').value;
+
+      let filtered = sessions.slice();
+
+      if (fromVal) {
+        const fromDate = new Date(fromVal);
+        filtered = filtered.filter(s => {
+          const t = new Date(s.completed_at || s.created_at);
+          return !Number.isNaN(t.getTime()) && t >= fromDate;
+        });
+      }
+
+      if (toVal) {
+        const toDate = new Date(toVal);
+        filtered = filtered.filter(s => {
+          const t = new Date(s.completed_at || s.created_at);
+          return !Number.isNaN(t.getTime()) && t <= toDate;
+        });
+      }
+
+      state.filteredSessions = filtered;
+      renderSessionsTable();
+    }
+
+    function renderSessionsTable() {
+      const body = document.getElementById('sessionsBody');
+      const sessions = state.filteredSessions;
+      if (!sessions || sessions.length === 0) {
+        body.innerHTML = '<tr><td colspan="5" class="muted" style="padding:12px;">No sessions match the current filters.</td></tr>';
+        return;
+      }
+      body.innerHTML = '';
+      sessions.forEach(s => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${shortSessionId(s)}</td>
+          <td>${shortParticipantId(s)}</td>
+          <td>${formatDateTime(s.created_at)}</td>
+          <td>${formatDateTime(s.completed_at)}</td>
+        `;
+        body.appendChild(tr);
+      });
+    }
+
+    function renderStimuliSummary(stimuliStats) {
+      const card = document.getElementById('stimuliCard');
+      const body = document.getElementById('stimuliBody');
+      if (!stimuliStats || !stimuliStats.length) {
+        card.style.display = 'none';
+        return;
+      }
+      card.style.display = 'block';
+      body.innerHTML = '';
+      stimuliStats.forEach(st => {
+        const shown = st.times_shown ?? st.n_shown ?? 0;
+        const chosen = st.times_chosen ?? st.n_chosen ?? 0;
+        const win = shown > 0 ? ((chosen / shown) * 100).toFixed(1) + '%' : '—';
+        const label = st.label || st.stimulus_name || st.stimulus_id || 'Stimulus';
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${label}</td>
+          <td>${shown}</td>
+          <td>${chosen}</td>
+          <td>${win}</td>
+        `;
+        body.appendChild(tr);
+      });
+    }
+
+    function getFilenameFromContentDisposition(headerValue) {
+      if (!headerValue) return null;
+
+      // Example: attachment; filename="Curvature_Main_choices_clean.csv"
+      const parts = headerValue.split(';').map(p => p.trim());
+      const filenamePart = parts.find(p =>
+        p.toLowerCase().startsWith('filename=')
+      );
+      if (!filenamePart) return null;
+
+      let filename = filenamePart.substring('filename='.length).trim();
+
+      // strip surrounding quotes if present
+      if (filename.startsWith('"') && filename.endsWith('"')) {
+        filename = filename.slice(1, -1);
+      }
+
+      return filename || null;
+    }
+
+
+    async function exportCsv(kind) {
+      const params = new URLSearchParams(window.location.search);
+      const experimentId = params.get('exp');
+      if (!experimentId) { alert('No experiment ID provided'); return; }
+
+      const rawBtn   = document.getElementById('downloadRawBtn');
+      const cleanBtn = document.getElementById('downloadCleanBtn');
+      const btn = kind === 'raw' ? rawBtn : cleanBtn;
+
+      if (!btn) return;
+
+      btn.disabled = true;
+      const original = btn.textContent;
+      btn.textContent = 'Exporting...';
+
+      try {
+        const endpoint = kind === 'raw'
+          ? `${API_BASE}/experiments/${experimentId}/export_choices_csv`
+          : `${API_BASE}/experiments/${experimentId}/export_clean_choices_csv`;
+
+        const resp = await fetch(endpoint, { headers: { ...authHeader() } });
+        if (!resp.ok) throw new Error(`Export failed (${resp.status})`);
+
+        // Get filename from Content-Disposition, if present
+        const cdHeader = resp.headers.get('Content-Disposition');
+        let filename = getFilenameFromContentDisposition(cdHeader);
+        if (!filename) {
+          // Fallback if server header missing for some reason
+          filename = `experiment_${experimentId}_${kind}_${Date.now()}.csv`;
+        }
+
+        const blob = await resp.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+
+      } catch (err) {
+        console.error(err);
+        alert('Export failed: ' + err.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    }
+
+
+    async function loadResults() {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const experimentId = params.get('exp');
+        if (!experimentId) {
+          document.getElementById('expName').innerText = 'No experiment specified';
+          document.getElementById('expStatus').innerText = 'Append ?exp=<experiment_id> to the URL.';
+          return;
+        }
+
+        // Show buttons and wire them
+        document.getElementById('downloadRawBtn').style.display = 'inline-block';
+        document.getElementById('downloadCleanBtn').style.display = 'inline-block';
+        document.getElementById('downloadRawBtn').onclick   = () => exportCsv('raw');
+        document.getElementById('downloadCleanBtn').onclick = () => exportCsv('clean');
+
+        const res = await fetch(`${API_BASE}/experiments/${experimentId}/results`, {
+          headers: { 'Accept': 'application/json', ...authHeader() }
+        });
+        if (!res.ok) throw new Error('Failed to fetch results');
+        const data = await res.json();
+        state.rawData = data;
+        state.filteredSessions = (data.sessions || []).slice();
+
+        document.getElementById('expName').innerText =
+          data.experiment?.name || 'Results';
+        document.getElementById('expStatus').innerText =
+          `Status: ${data.experiment?.status || 'unknown'}`;
+
+        renderMetrics(data.summary || {});
+        renderSessionsTable();
+        renderStimuliSummary(data.stimuli_stats || data.stimuli || []);
+      } catch (e) {
+        console.error(e);
+        document.getElementById('expStatus').innerText = e.message;
+        const body = document.getElementById('sessionsBody');
+        body.innerHTML = `<tr><td colspan="5" class="muted" style="padding:12px;">${e.message}</td></tr>`;
+      }
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('applyFiltersBtn').addEventListener('click', applyFilters);
+      loadResults();
+    });
+  </script>
+</body>
+</html>
