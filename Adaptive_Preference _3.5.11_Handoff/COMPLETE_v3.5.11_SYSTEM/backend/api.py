@@ -637,10 +637,11 @@ class Stimulus(db.Model):
             'tags': current_tags,
             'experiment_id': str(self.experiment_id) if self.experiment_id else None,
         }
+
 class Session(db.Model):
     __tablename__ = 'sessions'
     
-    session_id = db.Column(db.String(36), primary_key=True, default=uuid.uuid4)
+    session_id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     experiment_id = db.Column(db.String(36), db.ForeignKey('experiments.experiment_id', ondelete='RESTRICT'), nullable=False)
     
     session_token = db.Column(db.String(128), unique=True, nullable=False)
@@ -660,12 +661,13 @@ class Session(db.Model):
     
     subject_metadata = db.Column(db.JSON, default={})
     browser_info = db.Column(db.JSON, default={})
-    ip_address = db.Column(INET)
+    
+    # FIX: Changed INET to String for SQLite compatibility
+    ip_address = db.Column(db.String(45)) 
     
     consistency_score = db.Column(db.Float)
     attention_check_passed = db.Column(db.Boolean)
     
-    # Relationships
     experiment = db.relationship('Experiment', back_populates='sessions')
     choices = db.relationship('Choice', back_populates='session', cascade='all, delete-orphan')
     algorithm_state = db.relationship('AlgorithmState', back_populates='session', uselist=False)
@@ -688,17 +690,16 @@ class Session(db.Model):
             'attention_check_passed': self.attention_check_passed,
         }
 
-
-
 class AlgorithmState(db.Model):
     __tablename__ = 'algorithm_state'
     
-    state_id = db.Column(db.String(36), primary_key=True, default=uuid.uuid4)
+    state_id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     session_id = db.Column(db.String(36), db.ForeignKey('sessions.session_id', ondelete='CASCADE'), nullable=False, unique=True)
     
-    mu = db.Column(BYTEA, nullable=False)  # Preference means
-    sigma = db.Column(BYTEA, nullable=False)  # Covariance matrix
-    comparison_matrix = db.Column(BYTEA, nullable=False)
+    # FIX: Changed BYTEA to LargeBinary for SQLite compatibility
+    mu = db.Column(db.LargeBinary, nullable=False)
+    sigma = db.Column(db.LargeBinary, nullable=False)
+    comparison_matrix = db.Column(db.LargeBinary, nullable=False)
     
     trials_completed = db.Column(db.Integer, default=0)
     total_trials = db.Column(db.Integer, nullable=False)
@@ -708,17 +709,14 @@ class AlgorithmState(db.Model):
     
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
     version = db.Column(db.Integer, default=1)
     
-    # Relationships
     session = db.relationship('Session', back_populates='algorithm_state')
-
 
 class Choice(db.Model):
     __tablename__ = 'choices'
     
-    choice_id = db.Column(db.String(36), primary_key=True, default=uuid.uuid4)
+    choice_id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     session_id = db.Column(db.String(36), db.ForeignKey('sessions.session_id', ondelete='CASCADE'), nullable=False)
     
     trial_number = db.Column(db.Integer, nullable=False)
@@ -733,14 +731,12 @@ class Choice(db.Model):
     presentation_order = db.Column(db.String(10))
     break_before = db.Column(db.Boolean, default=False)
     
-    # Relationships
     session = db.relationship('Session', back_populates='choices')
-
 
 class AuditLog(db.Model):
     __tablename__ = 'audit_log'
     
-    log_id = db.Column(db.String(36), primary_key=True, default=uuid.uuid4)
+    log_id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     
     user_id = db.Column(db.String(36), db.ForeignKey('users.user_id'))
     experiment_id = db.Column(db.String(36), db.ForeignKey('experiments.experiment_id'))
@@ -751,12 +747,13 @@ class AuditLog(db.Model):
     description = db.Column(db.Text)
     details = db.Column(db.JSON, default={})
     
-    ip_address = db.Column(INET)
+    # FIX: Changed INET to String for SQLite compatibility
+    ip_address = db.Column(db.String(45)) 
+    
     user_agent = db.Column(db.Text)
     severity = db.Column(db.String(20), default='info')
     
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
 
 # ============================================================================
 # HELPER FUNCTIONS
