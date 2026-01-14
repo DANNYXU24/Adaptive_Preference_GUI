@@ -872,17 +872,30 @@ def _evaluate_session_quality(session, experiment):
 
 @app.route('/api/auth/dev_issue_token', methods=['POST'])
 def dev_issue_token():
-    """Development endpoint for issuing tokens (disabled in production)."""
-    if os.environ.get('AUTH_DEV_ISSUE_TOKENS') != '1':
-        return jsonify({'error': 'disabled'}), 403
+    """Development endpoint for issuing tokens, now forced active for offline use."""
+    # Remove the environment variable check for local robustness
+    # if os.environ.get('AUTH_DEV_ISSUE_TOKENS') != '1':
+    #     return jsonify({'error': 'disabled'}), 403
     
     data = request.get_json() or {}
     role = data.get('role', 'researcher')
     sub = data.get('sub', 'dev-user')
     
+    # Ensure the user exists in your new SQLite database so the token is valid
+    user = User.query.filter_by(username=sub).first()
+    if not user:
+        user = User(
+            email=f"{sub}@example.com",
+            username=sub,
+            role=role,
+            full_name="Local Developer"
+        )
+        user.set_password("dev-password") # Default password
+        db.session.add(user)
+        db.session.commit()
+    
     token = jwt_encode({'sub': sub, 'role': role}, exp_seconds=3600*8)
-    return jsonify({'token': token, 'role': role})
-
+    return jsonify({'token': token, 'role': role, 'user_id': user.user_id})
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
@@ -1785,8 +1798,9 @@ def serve_frontend(filename):
 
 @app.route('/')
 def index():
-    """Redirects the base URL to the experimenter dashboard."""
-    return serve_frontend('experimenter_dashboard_improved.html')
+    """Redirects the base URL to the login page first for security."""
+    # Change from 'experimenter_dashboard_improved.html' to your login file
+    return serve_frontend('admin_PATCHED.html')
 # ----------------------------------------
 if __name__ == '__main__':
     # Automatically create the offline database file and tables on click

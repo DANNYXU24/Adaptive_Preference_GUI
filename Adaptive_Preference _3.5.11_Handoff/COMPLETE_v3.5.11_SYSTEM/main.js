@@ -48,12 +48,13 @@ function createWindow() {
   });
 
   // 3. WAIT until the server is confirmed healthy, then load and show
-  checkServerReady(() => {
-    win.loadURL('http://127.0.0.1:5000/frontend/experimenter_dashboard_improved.html');
-    win.once('ready-to-show', () => {
-      win.show();
-    });
+// Replace the dashboard link with the login page link
+checkServerReady(() => {
+  win.loadURL('http://127.0.0.1:5000/frontend/admin_PATCHED.html'); // Or your specific login filename
+  win.once('ready-to-show', () => {
+    win.show();
   });
+});
 }
 
 app.whenReady().then(createWindow);
