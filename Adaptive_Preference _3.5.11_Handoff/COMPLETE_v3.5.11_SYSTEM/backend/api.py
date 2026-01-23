@@ -48,23 +48,35 @@ CORS(app, resources={
     }
 })
 
-# --- REPLACING POSTGRES CONFIG WITH AUTO-SQLITE ---
-BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-# Creates the database file in the root directory for easy access
-default_db_path = os.path.join(BASE_DIR, '..', 'adaptive_preference_offline.db')
 
+# --- DUAL SQLITE DATABASES (core + results) ---
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+
+CORE_DB_PATH = os.path.join(BASE_DIR, '..', 'adaptive_preference_experiments.db')
+RESULTS_DB_PATH = os.path.join(BASE_DIR, '..', 'adaptive_preference_results.db')
+
+# Core DB: experiments/stimuli/users (portable)
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
-    'DATABASE_URL', 
-    f'sqlite:///{default_db_path}'
+    'CORE_DATABASE_URL',
+    f"sqlite:///{CORE_DB_PATH}"
 )
+
+# Results DB: sessions/choices/state/audit (resettable)
+app.config['SQLALCHEMY_BINDS'] = {
+    'results': os.environ.get(
+        'RESULTS_DATABASE_URL',
+        f"sqlite:///{RESULTS_DB_PATH}"
+    )
+}
+
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SQLALCHEMY_ECHO'] = (os.environ.get('FLASK_ENV') == 'development')
 
-# SQLite does not support these Postgres-specific options
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     'pool_pre_ping': True,
-    'connect_args': {'check_same_thread': False}  # <--- THIS FIXES THE PROGRAMMING ERROR
+    'connect_args': {'check_same_thread': False}
 }
+
 
 # File upload configuration
 _default_upload = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets', 'stimuli')
@@ -227,7 +239,7 @@ class Experiment(db.Model):
     # Relationships
     user = db.relationship('User', back_populates='experiments')
     stimuli = db.relationship('Stimulus', back_populates='experiment', cascade='all, delete-orphan')
-    sessions = db.relationship('Session', back_populates='experiment')
+    
     
     def to_dict(self, include_stimuli=False):
         data = {
@@ -520,7 +532,8 @@ def delete_experiment(experiment_id):
 
         # Grab needed info *before* we delete anything
         exp_name = exp.name
-        session_ids = [s.session_id for s in exp.sessions]
+        session_ids = [s.session_id for s in Session.query.filter_by(experiment_id=experiment_id).all()]
+
 
         # If caller didn't explicitly allow data deletion but there are sessions, block it
         if not delete_data and session_ids:
@@ -554,17 +567,13 @@ def delete_experiment(experiment_id):
                 sa_delete(Session).where(Session.session_id.in_(session_ids))
             )
 
-            # 4b) Choices linked directly to stimuli of this experiment (not tied to a session)
-            db.session.execute(
-                sa_delete(Choice).where(Choice.stimulus_a_id.in_(
-                    db.session.query(Stimulus.stimulus_id).filter(Stimulus.experiment_id == experiment_id)
-                ))
-            )
-            db.session.execute(
-                sa_delete(Choice).where(Choice.stimulus_b_id.in_(
-                    db.session.query(Stimulus.stimulus_id).filter(Stimulus.experiment_id == experiment_id)
-                ))
-            )
+        # 4b) Choices linked directly to this experiment's stimuli (two-step: fetch IDs from core DB)
+        stimulus_ids = [s.stimulus_id for s in Stimulus.query.filter_by(experiment_id=experiment_id).all()]
+        if stimulus_ids:
+            db.session.execute(sa_delete(Choice).where(Choice.stimulus_a_id.in_(stimulus_ids)))
+            db.session.execute(sa_delete(Choice).where(Choice.stimulus_b_id.in_(stimulus_ids)))
+            db.session.execute(sa_delete(Choice).where(Choice.chosen_stimulus_id.in_(stimulus_ids)))
+
 
         # 5) Stimuli belonging to this experiment
         db.session.execute(
@@ -645,39 +654,41 @@ class Stimulus(db.Model):
         }
 
 class Session(db.Model):
+    __bind_key__ = 'results'
     __tablename__ = 'sessions'
-    
+
     session_id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    experiment_id = db.Column(db.String(36), db.ForeignKey('experiments.experiment_id', ondelete='RESTRICT'), nullable=False)
-    
+
+    # IMPORTANT: no ForeignKey here because Experiment lives in core DB
+    experiment_id = db.Column(db.String(36), nullable=False, index=True)
+
     session_token = db.Column(db.String(128), unique=True, nullable=False)
     subject_id = db.Column(db.String(100))
     status = db.Column(db.String(20), default='active')
-    
+
     trials_completed = db.Column(db.Integer, default=0)
     trials_total = db.Column(db.Integer, nullable=False)
     current_trial = db.Column(db.Integer, default=0)
-    
+
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     started_at = db.Column(db.DateTime)
     completed_at = db.Column(db.DateTime)
     last_activity_at = db.Column(db.DateTime, default=datetime.utcnow)
-    
+
     total_time_seconds = db.Column(db.Integer, default=0)
-    
+
     subject_metadata = db.Column(db.JSON, default={})
     browser_info = db.Column(db.JSON, default={})
-    
-    # FIX: Changed INET to String for SQLite compatibility
-    ip_address = db.Column(db.String(45)) 
-    
+
+    ip_address = db.Column(db.String(45))
+
     consistency_score = db.Column(db.Float)
     attention_check_passed = db.Column(db.Boolean)
-    
-    experiment = db.relationship('Experiment', back_populates='sessions')
+
+    # Relationships inside results DB are fine:
     choices = db.relationship('Choice', back_populates='session', cascade='all, delete-orphan')
     algorithm_state = db.relationship('AlgorithmState', back_populates='session', uselist=False)
-    
+
     def to_dict(self):
         progress = (self.trials_completed / self.trials_total * 100) if self.trials_total > 0 else 0
         return {
@@ -696,7 +707,9 @@ class Session(db.Model):
             'attention_check_passed': self.attention_check_passed,
         }
 
+
 class AlgorithmState(db.Model):
+    __bind_key__ = 'results'
     __tablename__ = 'algorithm_state'
     
     state_id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -720,46 +733,50 @@ class AlgorithmState(db.Model):
     session = db.relationship('Session', back_populates='algorithm_state')
 
 class Choice(db.Model):
+    __bind_key__ = 'results'
     __tablename__ = 'choices'
-    
+
     choice_id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     session_id = db.Column(db.String(36), db.ForeignKey('sessions.session_id', ondelete='CASCADE'), nullable=False)
-    
+
     trial_number = db.Column(db.Integer, nullable=False)
-    
-    stimulus_a_id = db.Column(db.String(36), db.ForeignKey('stimuli.stimulus_id'), nullable=False)
-    stimulus_b_id = db.Column(db.String(36), db.ForeignKey('stimuli.stimulus_id'), nullable=False)
-    chosen_stimulus_id = db.Column(db.String(36), db.ForeignKey('stimuli.stimulus_id'), nullable=False)
-    
+
+    # IMPORTANT: no ForeignKey here because Stimulus lives in core DB
+    stimulus_a_id = db.Column(db.String(36), nullable=False)
+    stimulus_b_id = db.Column(db.String(36), nullable=False)
+    chosen_stimulus_id = db.Column(db.String(36), nullable=False)
+
     response_time_ms = db.Column(db.Integer, nullable=False)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
-    
+
     presentation_order = db.Column(db.String(10))
     break_before = db.Column(db.Boolean, default=False)
-    
+
     session = db.relationship('Session', back_populates='choices')
 
+
 class AuditLog(db.Model):
+    __bind_key__ = 'results'
     __tablename__ = 'audit_log'
-    
+
     log_id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    
-    user_id = db.Column(db.String(36), db.ForeignKey('users.user_id'))
-    experiment_id = db.Column(db.String(36), db.ForeignKey('experiments.experiment_id'))
-    session_id = db.Column(db.String(36), db.ForeignKey('sessions.session_id'))
-    
+
+    # IMPORTANT: no ForeignKey here because User/Experiment are in core DB
+    user_id = db.Column(db.String(36))
+    experiment_id = db.Column(db.String(36))
+    session_id = db.Column(db.String(36))
+
     event_type = db.Column(db.String(100), nullable=False)
     event_category = db.Column(db.String(50), nullable=False)
     description = db.Column(db.Text)
     details = db.Column(db.JSON, default={})
-    
-    # FIX: Changed INET to String for SQLite compatibility
-    ip_address = db.Column(db.String(45)) 
-    
+
+    ip_address = db.Column(db.String(45))
     user_agent = db.Column(db.Text)
     severity = db.Column(db.String(20), default='info')
-    
+
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -1265,8 +1282,12 @@ def get_next_pair(session_token):
             db.session.commit()
             return jsonify({'complete': True})
         
-        experiment = session.experiment
-        stimuli = experiment.stimuli
+        experiment = Experiment.query.filter_by(experiment_id=session.experiment_id).first()
+        if not experiment:
+            return jsonify({'error': 'Experiment not found for session'}), 500
+
+        stimuli = Stimulus.query.filter_by(experiment_id=experiment.experiment_id).all()
+
         
         if len(stimuli) < 2:
             return jsonify({'error': 'Not enough stimuli'}), 400
@@ -1362,8 +1383,13 @@ def record_choice(session_token):
                 return jsonify({'error': f'Missing field: {field}'}), 400
         
         # Get stimuli to find their indices
-        experiment = session.experiment
-        stimuli_list = sorted(experiment.stimuli, key=lambda s: s.display_order or 0)
+        experiment = Experiment.query.filter_by(experiment_id=session.experiment_id).first()
+        if not experiment:
+            return jsonify({'error': 'Experiment not found for session'}), 500
+
+        stimuli_list = Stimulus.query.filter_by(experiment_id=experiment.experiment_id) \
+                                    .order_by(Stimulus.display_order.asc()).all()
+
         
         # Find indices
         stimulus_a_idx = next((i for i, s in enumerate(stimuli_list) 
@@ -1507,25 +1533,30 @@ def get_results(experiment_id):
 @require_auth
 @require_roles(['admin', 'researcher'])
 def get_all_experiments():
-    """Get all experiments for the admin dashboard."""
+    """Get all experiments for the admin dashboard (core DB + session counts from results DB)."""
     try:
-        experiments = db.session.query(
-            Experiment,
-            db.func.count(Session.session_id).label('session_count')
-        ).outerjoin(Session, Experiment.experiment_id == Session.experiment_id)\
-         .filter(Experiment.archived_at.is_(None)) \
-         .group_by(Experiment.experiment_id).order_by(Experiment.created_at.desc()).all()
+        experiments = Experiment.query \
+            .filter(Experiment.archived_at.is_(None)) \
+            .order_by(Experiment.created_at.desc()) \
+            .all()
+
+        counts = dict(
+            db.session.query(Session.experiment_id, db.func.count(Session.session_id))
+              .group_by(Session.experiment_id)
+              .all()
+        )
 
         results = []
-        for exp, count in experiments:
+        for exp in experiments:
             exp_data = exp.to_dict()
-            exp_data['session_count'] = count
+            exp_data['session_count'] = int(counts.get(str(exp.experiment_id), 0))
             results.append(exp_data)
 
         return jsonify({'success': True, 'experiments': results})
     except Exception as e:
         logger.error(f"Error getting all experiments: {e}")
         return jsonify({'error': str(e)}), 500
+
 
 
 @app.route('/api/experiments/<experiment_id>/export_choices_csv', methods=['GET'])
@@ -1539,7 +1570,7 @@ def export_choices_csv(experiment_id):
             return jsonify({'error': 'Experiment not found'}), 404
 
         # Find all session IDs for this experiment
-        session_ids = [s.session_id for s in experiment.sessions]
+        session_ids = [s.session_id for s in Session.query.filter_by(experiment_id=experiment_id).all()]
         if not session_ids:
             return jsonify({'error': 'No sessions found for this experiment'}), 404
 
@@ -1820,8 +1851,11 @@ def index():
 if __name__ == '__main__':
     # Automatically create the offline database file and tables on click
     with app.app_context():
-        db.create_all()
-        print(f"SUCCESS: Offline Database Initialized at: {app.config['SQLALCHEMY_DATABASE_URI']}")
+        db.create_all()                    # core tables
+        db.create_all(bind_key='results')  # results tables
+        print("SUCCESS: Core DB Initialized at:", app.config['SQLALCHEMY_DATABASE_URI'])
+        print("SUCCESS: Results DB Initialized at:", app.config['SQLALCHEMY_BINDS']['results'])
+
     
     app.run(
         host='127.0.0.1', # Use local loopback for offline security
