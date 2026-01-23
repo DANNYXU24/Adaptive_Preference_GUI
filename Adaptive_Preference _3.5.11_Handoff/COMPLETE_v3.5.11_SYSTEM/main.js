@@ -3,6 +3,9 @@ const { spawn } = require('child_process');
 const path = require('path');
 const http = require('http');
 
+// 1. FIX: Disable Hardware Acceleration to prevent "Network Service" crashes
+app.disableHardwareAcceleration();
+
 let pythonProcess = null;
 
 function checkServerReady(callback) {
@@ -22,16 +25,19 @@ function checkServerReady(callback) {
 }
 
 function createWindow() {
-  // 1. Path to your local Python inside the .venv
-  const pythonPath = path.join(__dirname, '.venv', 'Scripts', 'python.exe');
+  // 2. FIX: Changed '.venv' to 'venv' (Removed the dot) to match your installer script
+  // This is why it wasn't finding Python on the new computer
+  const pythonPath = path.join(__dirname, 'venv', 'Scripts', 'python.exe');
   const scriptPath = path.join(__dirname, 'backend', 'api.py');
   
-  // 2. Launch the backend
+  // 3. Launch the backend
+  console.log('Attempting to launch Python from:', pythonPath);
+  
   pythonProcess = spawn(pythonPath, [scriptPath], {
     env: { ...process.env, FLASK_ENV: 'production' }
   });
 
-  // Optional: Log backend output to terminal for debugging
+  // Log backend output to terminal for debugging
   pythonProcess.stdout.on('data', (data) => console.log(`Python: ${data}`));
   pythonProcess.stderr.on('data', (data) => console.error(`Python Error: ${data}`));
 
@@ -47,14 +53,14 @@ function createWindow() {
     }
   });
 
-  // 3. WAIT until the server is confirmed healthy, then load and show
-// Replace the dashboard link with the login page link
-checkServerReady(() => {
-  win.loadURL('http://127.0.0.1:5000/frontend/admin_PATCHED.html'); // Or your specific login filename
-  win.once('ready-to-show', () => {
-    win.show();
+  // 4. WAIT until the server is confirmed healthy, then load and show
+  checkServerReady(() => {
+    console.log('Backend is ready. Loading Dashboard...');
+    win.loadURL('http://127.0.0.1:5000/frontend/admin_PATCHED.html'); 
+    win.once('ready-to-show', () => {
+      win.show();
+    });
   });
-});
 }
 
 app.whenReady().then(createWindow);
