@@ -2394,9 +2394,11 @@
             
         try {
                 // 1. Check login BEFORE calling fetch
-                if (!localStorage.getItem('jwt') || localStorage.getItem('token')) {
-                    alert('Please log in first (click "Dev Login (researcher)" at the top).');
-                    return;
+                // 1) Check login BEFORE calling fetch
+                const t = localStorage.getItem('jwt') || localStorage.getItem('token');
+                if (!t) {
+                alert('Please log in first (click "Dev Login (researcher)" at the top).');
+                return;
                 }
 
              let experimentId = existingExperimentId;
@@ -2414,14 +2416,22 @@
                 await resp.json();
                 } else {
                 const expResponse = await fetch('http://127.0.0.1:5000/api/experiments', {
-                    method: 'POST',
-                    headers: {
+                method: 'POST',
+                headers: {
                     'Content-Type': 'application/json',
                     ...authHeader()
-                    },
-                    body: JSON.stringify(experimentData)
+                },
+                body: JSON.stringify(experimentData)
                 });
-                if (!expResponse.ok) throw new Error('Failed to create experiment');
+
+                if (!expResponse.ok) {
+                let detail = '';
+                try { detail = (await expResponse.json()).error || ''; }
+                catch { detail = await expResponse.text(); }
+                throw new Error(`Failed to create experiment (HTTP ${expResponse.status}): ${detail}`);
+                }
+
+
                 const expData = await expResponse.json();
                 experimentId = expData.experiment.experiment_id;
                 }
@@ -2432,11 +2442,18 @@
                     const formData = new FormData();
                     formData.append('file', file);
                     
-                    await fetch(`http://127.0.0.1:5000/api/experiments/${experimentId}/stimuli`, {
-                        method: 'POST',
-                        headers: authHeader(),
-                        body: formData
+                    const uploadResp = await fetch(`http://127.0.0.1:5000/api/experiments/${experimentId}/stimuli`, {
+                    method: 'POST',
+                    headers: authHeader(),
+                    body: formData
                     });
+                    if (!uploadResp.ok) {
+                    let detail = '';
+                    try { detail = (await uploadResp.json()).error || ''; }
+                    catch { detail = await uploadResp.text(); }
+                    throw new Error(`Stimulus upload failed (HTTP ${uploadResp.status}): ${detail}`);
+                    }
+
                 }
                 
                 // Publish experiment
@@ -2445,7 +2462,13 @@
                     headers: authHeader()
                 });
                 
-                if (!publishResponse.ok) throw new Error('Failed to publish');
+                if (!publishResponse.ok) {
+                let detail = '';
+                    try { detail = (await publishResponse.json()).error || ''; }
+                    catch { detail = await publishResponse.text(); }
+                    throw new Error(`Failed to publish (HTTP ${publishResponse.status}): ${detail}`);
+                }
+
                 
                 const publishData = await publishResponse.json();
                 

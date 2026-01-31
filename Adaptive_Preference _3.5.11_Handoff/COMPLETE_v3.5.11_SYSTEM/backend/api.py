@@ -24,6 +24,20 @@ from functools import wraps
 import hashlib
 import base64
 import re
+import sqlite3
+
+# Per-experiment settings DB + per-participant results DB helpers
+try:
+    from backend.experiment_fs import (
+        get_experiment_paths, init_settings_db, init_participant_results_db,
+        lookup_result_db_for_session, insert_session_index, mark_session_complete, slugify
+    )
+except ImportError:
+    from experiment_fs import (
+        get_experiment_paths, init_settings_db, init_participant_results_db,
+        lookup_result_db_for_session, insert_session_index, mark_session_complete, slugify
+    )
+
 
 # Import auth functions - consolidated import
 try:
@@ -49,25 +63,26 @@ CORS(app, resources={
 })
 
 
-# --- DUAL SQLITE DATABASES (core + results) ---
+# --- SINGLE SQLITE CORE DATABASE (no separate results DB) ---
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 
-CORE_DB_PATH = os.path.join(BASE_DIR, '..', 'adaptive_preference_experiments.db')
-RESULTS_DB_PATH = os.path.join(BASE_DIR, '..', 'adaptive_preference_results.db')
+# Store the core registry DB INSIDE experiments_data/_system instead of the repo root
+SYSTEM_DATA_DIR = os.path.abspath(os.path.join(BASE_DIR, '..', 'experiments_data', '_system'))
+os.makedirs(SYSTEM_DATA_DIR, exist_ok=True)
 
-# Core DB: experiments/stimuli/users (portable)
+CORE_DB_PATH = os.path.join(SYSTEM_DATA_DIR, 'adaptive_preference_core.db')
+
+# Core DB: users + experiments registry (portable)
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
     'CORE_DATABASE_URL',
     f"sqlite:///{CORE_DB_PATH}"
 )
 
-# Results DB: sessions/choices/state/audit (resettable)
-app.config['SQLALCHEMY_BINDS'] = {
-    'results': os.environ.get(
-        'RESULTS_DATABASE_URL',
-        f"sqlite:///{RESULTS_DB_PATH}"
-    )
-}
+# IMPORTANT:
+# We no longer use a SQLAlchemy "results" bind DB.
+# Results live in per-experiment/per-participant SQLite files created via sqlite3 (not SQLAlchemy binds).
+# So DO NOT set SQLALCHEMY_BINDS here.
+
 
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SQLALCHEMY_ECHO'] = (os.environ.get('FLASK_ENV') == 'development')
@@ -93,6 +108,127 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# ============================================================================
+# PER-EXPERIMENT SETTINGS DB + PER-PARTICIPANT RESULTS DB (SQLite files)
+# ============================================================================
+DATA_BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+
+def _exp_paths(experiment: 'Experiment') -> dict:
+    """
+    Compute experiment folder/db paths and ensure settings DB exists.
+    IMPORTANT: This must be idempotent.
+    If metadata already contains exp_storage and the folder/db exist, reuse it.
+    """
+    meta = experiment.experiment_metadata or {}
+    storage = meta.get("exp_storage") or {}
+
+    # If we already created storage before, REUSE it (do not create a new folder)
+    exp_dir = storage.get("exp_dir")
+    settings_db = storage.get("settings_db")
+    stimuli_dir = storage.get("stimuli_dir")
+    participants_dir = storage.get("participants_dir")
+
+    # If we already created storage before, REUSE it (but verify it belongs to this experiment).
+    if exp_dir and settings_db and os.path.exists(exp_dir) and os.path.exists(settings_db):
+        # Guard against shared/incorrect metadata pointing at another experiment's folder.
+        # (This can happen if JSON defaults were mutable, or if a folder was copied manually.)
+        marker = os.path.join(exp_dir, ".experiment_id")
+        try:
+            if os.path.exists(marker):
+                existing_id = open(marker, "r", encoding="utf-8").read().strip()
+                if existing_id and existing_id != str(experiment.experiment_id):
+                    # Treat as missing so we create fresh paths below.
+                    exp_dir = None
+        except Exception:
+            exp_dir = None
+
+    if exp_dir and settings_db and os.path.exists(exp_dir) and os.path.exists(settings_db):
+        # Make sure subfolders exist (in case they were deleted manually)
+        if stimuli_dir:
+            os.makedirs(stimuli_dir, exist_ok=True)
+        if participants_dir:
+            os.makedirs(participants_dir, exist_ok=True)
+        init_settings_db(settings_db)
+        return storage
+
+
+    # Otherwise create fresh paths
+    exp_name = experiment.name or "experiment"
+    paths = get_experiment_paths(DATA_BASE_DIR, str(experiment.experiment_id), exp_name)
+    init_settings_db(paths["settings_db"])
+
+    meta["exp_storage"] = {
+        "exp_dir": paths["exp_dir"],
+        "settings_db": paths["settings_db"],
+        "stimuli_dir": paths["stimuli_dir"],
+        "participants_dir": paths["participants_dir"],
+        "exp_slug": paths["exp_slug"],
+    }
+
+    experiment.experiment_metadata = meta
+    db.session.add(experiment)
+    db.session.commit()
+
+    return meta["exp_storage"]
+
+
+
+def _get_settings_db_path(experiment: 'Experiment') -> str:
+    meta = experiment.experiment_metadata or {}
+    storage = meta.get("exp_storage") or {}
+    settings_db = storage.get("settings_db")
+    if settings_db and os.path.exists(settings_db):
+        return settings_db
+    # create if missing
+    return _exp_paths(experiment)["settings_db"]
+
+
+def _connect_sqlite(path: str) -> sqlite3.Connection:
+    con = sqlite3.connect(path)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA foreign_keys=ON;")
+    con.execute("PRAGMA journal_mode=WAL;")
+    return con
+
+
+def _list_stimuli_from_settings(settings_db_path: str):
+    con = _connect_sqlite(settings_db_path)
+    try:
+        rows = con.execute(
+            "SELECT * FROM stimuli ORDER BY COALESCE(display_order,0), created_at ASC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        con.close()
+
+
+def _stimulus_row_to_dict(row: dict) -> dict:
+    return {
+        "stimulus_id": row.get("stimulus_id"),
+        "filename": row.get("filename"),
+        "file_path": row.get("file_path"),
+        "mime_type": row.get("mime_type"),
+        "display_order": row.get("display_order") or 0,
+        "label": row.get("label"),
+        "tags": json.loads(row.get("tags_json") or "[]"),
+        "metadata": json.loads(row.get("metadata_json") or "{}"),
+        "created_at": row.get("created_at"),
+        # the frontend expects a URL it can load
+        "url": f"/uploads/{os.path.basename(row.get('file_path') or '')}"
+    }
+
+
+def _participant_result_db_path(experiment: 'Experiment', subject_id: str, session_token: str) -> str:
+    meta = experiment.experiment_metadata or {}
+    storage = meta.get("exp_storage") or _exp_paths(experiment)
+    exp_slug = storage.get("exp_slug") or slugify(experiment.name or "experiment")
+    safe_subject = re.sub(r"[^a-zA-Z0-9_-]+", "_", (subject_id or "").strip())[:64]
+    if not safe_subject:
+        safe_subject = session_token[:12]
+    filename = f"{exp_slug}_Result_{safe_subject}.db"
+    return os.path.join(storage["participants_dir"], filename)
+
 
 def _redact_headers(headers):
     out = {}
@@ -166,7 +302,8 @@ class User(db.Model):
     last_login = db.Column(db.DateTime)
     is_active = db.Column(db.Boolean, default=True)
     email_verified = db.Column(db.Boolean, default=False)
-    preferences = db.Column(db.JSON, default={})
+    preferences = db.Column(db.JSON, default=dict)
+
     
     # Relationships
     experiments = db.relationship('Experiment', back_populates='user', cascade='all, delete-orphan')
@@ -234,7 +371,8 @@ class Experiment(db.Model):
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Metadata - renamed to avoid SQLAlchemy reserved name conflict
-    experiment_metadata = db.Column('metadata', db.JSON, default={})
+    experiment_metadata = db.Column('metadata', db.JSON, default=dict)
+
     
     # Relationships
     user = db.relationship('User', back_populates='experiments')
@@ -267,7 +405,15 @@ class Experiment(db.Model):
         }
         
         if include_stimuli:
-            data['stimuli'] = [s.to_dict() for s in self.stimuli]
+            # Stimuli are stored in the per-experiment SETTINGS DB (not in the core SQLAlchemy Stimulus table).
+            try:
+                settings_db = _get_settings_db_path(self)
+                rows = _list_stimuli_from_settings(settings_db)
+                data['stimuli'] = [_stimulus_row_to_dict(r) for r in rows]
+            except Exception:
+                # Don't break the experiment fetch if a settings DB is missing/corrupt.
+                data['stimuli'] = []
+
         
         return data
 
@@ -280,96 +426,116 @@ class Experiment(db.Model):
 @require_auth
 @require_roles(['admin', 'researcher'])
 def list_stimuli():
-    """List stimuli for the Stimulus Library view.
-
-    Optional query param:
-      - experiment_id: if supplied, restrict to that experiment only.
+    """
+    List stimuli for a specific experiment (stimuli live inside the per-experiment settings DB).
+    Query param: ?experiment_id=<id>
     """
     try:
         experiment_id = request.args.get('experiment_id')
-        query = Stimulus.query
-        if experiment_id:
-            query = query.filter_by(experiment_id=experiment_id)
+        if not experiment_id:
+            return jsonify({'error': 'experiment_id required'}), 400
 
-        # Order by upload time so newest are last
-        stimuli = query.order_by(Stimulus.uploaded_at.asc()).all()
+        experiment = Experiment.query.filter_by(experiment_id=experiment_id).first()
+        if not experiment:
+            return jsonify({'error': 'Experiment not found'}), 404
 
-        return jsonify({'stimuli': [s.to_dict() for s in stimuli]})
+        settings_db = _get_settings_db_path(experiment)
+        rows = _list_stimuli_from_settings(settings_db)
+        stimuli = [_stimulus_row_to_dict(r) for r in rows]
+
+        return jsonify({'success': True, 'stimuli': stimuli})
     except Exception as e:
         logger.error(f"Error listing stimuli: {e}")
-        return jsonify({'error': 'Failed to list stimuli'}), 500
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/stimuli/upload', methods=['POST'])
 @require_auth
 @require_roles(['admin', 'researcher'])
 def upload_stimulus_library():
-    """Upload a stimulus image for use in the library.
-
-    This mirrors the existing /api/experiments/<experiment_id>/stimuli
-    but uses a global /api/stimuli/upload entry-point.
-
-    It EXPECTS an experiment_id in the form-data or query string.
+    """
+    Upload a stimulus into the experiment's own DB + folder.
+    Form-data fields:
+      - experiment_id (required)
+      - file (required)
+      - display_order (optional int)
+      - label (optional)
     """
     try:
-        # IMPORTANT: we still need to know which experiment this belongs to
-        experiment_id = request.form.get('experiment_id') or request.args.get('experiment_id')
+        experiment_id = request.form.get('experiment_id')
         if not experiment_id:
-            return jsonify({'error': 'experiment_id is required to upload a stimulus'}), 400
+            return jsonify({'error': 'experiment_id required'}), 400
 
-        # Confirm the experiment exists
         experiment = Experiment.query.filter_by(experiment_id=experiment_id).first()
         if not experiment:
             return jsonify({'error': 'Experiment not found'}), 404
 
         if 'file' not in request.files:
-            return jsonify({'error': 'No file provided'}), 400
+            return jsonify({'error': 'No file part'}), 400
 
         file = request.files['file']
-        if file.filename == '':
-            return jsonify({'error': 'No file selected'}), 400
-
-        if not allowed_file(file.filename):
-            return jsonify({'error': 'Invalid file type'}), 400
+        if not file or file.filename == '':
+            return jsonify({'error': 'No selected file'}), 400
 
         filename = secure_filename(file.filename)
-        unique_filename = f"{uuid.uuid4()}_{filename}"
+        if '.' not in filename or filename.rsplit('.', 1)[1].lower() not in ALLOWED_EXTENSIONS:
+            return jsonify({'error': f'Invalid file type. Allowed: {sorted(ALLOWED_EXTENSIONS)}'}), 400
 
-        upload_folder = app.config['UPLOAD_FOLDER']
-        os.makedirs(upload_folder, exist_ok=True)
-        file_path = os.path.join(upload_folder, unique_filename)
+        storage = experiment.experiment_metadata.get("exp_storage") if experiment.experiment_metadata else None
+        if not storage:
+            storage = _exp_paths(experiment)
+
+        stimuli_dir = storage["stimuli_dir"]
+        os.makedirs(stimuli_dir, exist_ok=True)
+
+        # Ensure uniqueness on disk
+        stimulus_id = str(uuid.uuid4())
+        ext = filename.rsplit('.', 1)[1].lower()
+        disk_name = f"{stimulus_id}.{ext}"
+        file_path = os.path.join(stimuli_dir, disk_name)
         file.save(file_path)
 
-        checksum = calculate_file_checksum(file_path)
-        file_size = os.path.getsize(file_path)
+        display_order = request.form.get('display_order')
+        try:
+            display_order = int(display_order) if display_order is not None and str(display_order).strip() != '' else 0
+        except ValueError:
+            display_order = 0
 
-        stimulus = Stimulus(
-            experiment_id=experiment_id,
-            stimulus_name=filename,
-            file_path=file_path,
-            url=f"http://localhost:5000/uploads/{unique_filename}",
-            file_size_bytes=file_size,
-            mime_type=file.content_type,
-            checksum_sha256=checksum,
-        )
+        label = request.form.get('label')
 
-        db.session.add(stimulus)
-        db.session.commit()
+        settings_db = _get_settings_db_path(experiment)
+        con = _connect_sqlite(settings_db)
+        try:
+            con.execute(
+                """
+                INSERT INTO stimuli(stimulus_id, filename, file_path, mime_type, display_order, label, tags_json, metadata_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    stimulus_id, filename, file_path,
+                    f"image/{ext}" if ext != "gif" else "image/gif",
+                    display_order, label,
+                    "[]", "{}", datetime.utcnow().isoformat()
+                )
+            )
+            con.commit()
+        finally:
+            con.close()
 
-        log_audit(
-            'stimulus_uploaded',
-            'data',
-            f'Uploaded stimulus via /api/stimuli/upload: {filename}',
-            {'stimulus_id': str(stimulus.stimulus_id), 'file_size': file_size},
-            experiment_id=experiment_id
-        )
-
-        return jsonify({'stimulus': stimulus.to_dict()}), 201
+        return jsonify({
+            'success': True,
+            'stimulus': {
+                'stimulus_id': stimulus_id,
+                'filename': filename,
+                'display_order': display_order,
+                'label': label,
+                'url': f"/uploads/{disk_name}"
+            }
+        }), 201
 
     except Exception as e:
-        db.session.rollback()
-        logger.error(f"Error uploading stimulus via /api/stimuli/upload: {e}")
-        return jsonify({'error': 'Failed to upload stimulus'}), 500
+        logger.error(f"Error uploading stimulus: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/stimuli/<stimulus_id>', methods=['PUT'])
@@ -515,96 +681,35 @@ from sqlalchemy import delete as sa_delete
 @require_roles(['admin', 'researcher'])
 def delete_experiment(experiment_id):
     """
-    Delete an experiment.
-
-    Query param:
-      - delete_data=1 → delete experiment AND all sessions / choices / stimuli / algorithm_state / audit logs.
-      - delete_data=0 or omitted → only delete experiment row IF there are no sessions; otherwise 400.
+    Delete an experiment AND its attached stimuli/results on disk.
+    This removes:
+      - the experiment's folder (settings DB, stimuli files, participant DBs)
+      - the experiment row in the core DB
     """
-    delete_data_flag = request.args.get('delete_data', '0')
-    delete_data = delete_data_flag in ('1', 'true', 'True', 'yes')
-
     try:
-        # Load experiment once via ORM so we can verify it exists
-        exp = Experiment.query.filter_by(experiment_id=experiment_id).first()
-        if not exp:
+        experiment = Experiment.query.filter_by(experiment_id=experiment_id).first()
+        if not experiment:
             return jsonify({'error': 'Experiment not found'}), 404
 
-        # Grab needed info *before* we delete anything
-        exp_name = exp.name
-        session_ids = [s.session_id for s in Session.query.filter_by(experiment_id=experiment_id).all()]
+        meta = experiment.experiment_metadata or {}
+        exp_storage = meta.get("exp_storage") or {}
+        exp_dir = exp_storage.get("exp_dir")
 
-
-        # If caller didn't explicitly allow data deletion but there are sessions, block it
-        if not delete_data and session_ids:
-            return jsonify({
-                'error': (
-                    'Experiment has existing sessions; delete_data=1 is required to delete it. '
-                    'Use /api/experiments/<id>/archive to hide it instead.'
-                )
-            }), 400
-
-        # ---- Perform FK-safe bulk deletes using Core ----
-
-        if delete_data and session_ids:
-            # 1) Audit log rows tied to those sessions (FK depends on sessions)
-            db.session.execute(
-                sa_delete(AuditLog).where(AuditLog.session_id.in_(session_ids))
-            )
-
-            # 2) Choices linked to sessions
-            db.session.execute(
-                sa_delete(Choice).where(Choice.session_id.in_(session_ids))
-            )
-
-            # 3) AlgorithmState linked to sessions
-            db.session.execute(
-                sa_delete(AlgorithmState).where(AlgorithmState.session_id.in_(session_ids))
-            )
-
-            # 4) Sessions themselves
-            db.session.execute(
-                sa_delete(Session).where(Session.session_id.in_(session_ids))
-            )
-
-        # 4b) Choices linked directly to this experiment's stimuli (two-step: fetch IDs from core DB)
-        stimulus_ids = [s.stimulus_id for s in Stimulus.query.filter_by(experiment_id=experiment_id).all()]
-        if stimulus_ids:
-            db.session.execute(sa_delete(Choice).where(Choice.stimulus_a_id.in_(stimulus_ids)))
-            db.session.execute(sa_delete(Choice).where(Choice.stimulus_b_id.in_(stimulus_ids)))
-            db.session.execute(sa_delete(Choice).where(Choice.chosen_stimulus_id.in_(stimulus_ids)))
-
-
-        # 5) Stimuli belonging to this experiment
-        db.session.execute(
-            sa_delete(Stimulus).where(Stimulus.experiment_id == experiment_id)
-        )
-
-        # 6) Any remaining audit log rows tied directly to this experiment
-        db.session.execute(
-            sa_delete(AuditLog).where(AuditLog.experiment_id == experiment_id)
-        )
-
-        # 7) Finally, delete the experiment record itself
-        db.session.execute(
-            sa_delete(Experiment).where(Experiment.experiment_id == experiment_id)
-        )
-
+        # Delete DB record first (so UI updates even if filesystem delete fails)
+        db.session.delete(experiment)
         db.session.commit()
 
-        # IMPORTANT: do NOT touch `exp` here; it refers to a row that no longer exists.
-        # If you want to return its name, use exp_name which we captured before deleting.
-        return jsonify({
-            'success': True,
-            'delete_data': delete_data,
-            'experiment_id': experiment_id,
-            'experiment_name': exp_name,
-        })
+        # Then remove experiment folder (stimuli + participant DBs + settings DB)
+        if exp_dir and os.path.exists(exp_dir):
+            import shutil
+            shutil.rmtree(exp_dir, ignore_errors=True)
+
+        return jsonify({'success': True}), 200
 
     except Exception as e:
         db.session.rollback()
-        app.logger.exception('Failed to delete experiment')
-        return jsonify({'error': f'Failed to delete experiment: {str(e)}'}), 500
+        logger.error(f"Error deleting experiment: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 class Stimulus(db.Model):
@@ -623,10 +728,9 @@ class Stimulus(db.Model):
     width_px = db.Column(db.Integer)
     height_px = db.Column(db.Integer)
     checksum_sha256 = db.Column(db.String(64))
-    stimulus_metadata = db.Column('metadata', db.JSON, default={})
-    
-    # Modernized for SQLite compatibility
-    tags = db.Column(db.JSON, default=[]) 
+    stimulus_metadata = db.Column('metadata', db.JSON, default=dict)
+    tags = db.Column(db.JSON, default=list)
+
     uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
     
     # Relationships
@@ -654,7 +758,6 @@ class Stimulus(db.Model):
         }
 
 class Session(db.Model):
-    __bind_key__ = 'results'
     __tablename__ = 'sessions'
 
     session_id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -677,8 +780,9 @@ class Session(db.Model):
 
     total_time_seconds = db.Column(db.Integer, default=0)
 
-    subject_metadata = db.Column(db.JSON, default={})
-    browser_info = db.Column(db.JSON, default={})
+    subject_metadata = db.Column(db.JSON, default=dict)
+    browser_info = db.Column(db.JSON, default=dict)
+
 
     ip_address = db.Column(db.String(45))
 
@@ -709,7 +813,6 @@ class Session(db.Model):
 
 
 class AlgorithmState(db.Model):
-    __bind_key__ = 'results'
     __tablename__ = 'algorithm_state'
     
     state_id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -733,7 +836,6 @@ class AlgorithmState(db.Model):
     session = db.relationship('Session', back_populates='algorithm_state')
 
 class Choice(db.Model):
-    __bind_key__ = 'results'
     __tablename__ = 'choices'
 
     choice_id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -756,7 +858,6 @@ class Choice(db.Model):
 
 
 class AuditLog(db.Model):
-    __bind_key__ = 'results'
     __tablename__ = 'audit_log'
 
     log_id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -769,7 +870,8 @@ class AuditLog(db.Model):
     event_type = db.Column(db.String(100), nullable=False)
     event_category = db.Column(db.String(50), nullable=False)
     description = db.Column(db.Text)
-    details = db.Column(db.JSON, default={})
+    details = db.Column(db.JSON, default=dict)
+
 
     ip_address = db.Column(db.String(45))
     user_agent = db.Column(db.Text)
@@ -916,7 +1018,8 @@ def dev_issue_token():
             db.session.add(user)
             db.session.commit()
         
-        token = jwt_encode({'sub': sub, 'role': role}, exp_seconds=3600*8)
+            token = jwt_encode({'sub': sub, 'role': role, 'user_id': str(user.user_id)}, exp_seconds=3600*8)
+
         
         # CRITICAL FIX: The str() below prevents the 500 Crash
         return jsonify({
@@ -950,73 +1053,51 @@ def health_check():
 @require_auth
 @require_roles(['admin', 'researcher'])
 def create_experiment():
-    """Create new experiment."""
-    data = request.get_json()
-    print("DEBUG: create_experiment() CALLED", flush=True)
+    """Create new experiment (and automatically create its settings DB + stimuli/results folders)."""
     try:
         data = request.get_json() or {}
+        # require_auth sets request.user (dict). We need user_id from there.
+        if not getattr(request, 'user', None) or not request.user.get('user_id'):
+            return jsonify({'error': 'Missing user_id in token. Please dev login again.'}), 401
 
-        # Validate required fields
-        required = ['name', 'num_stimuli', 'max_trials']
-        for field in required:
+        # Validate required
+        for field in ['name', 'num_stimuli', 'max_trials']:
             if field not in data:
-                return jsonify({'error': f'Missing required field: {field}'}), 400
+                return jsonify({'error': f'Missing field: {field}'}), 400
 
-        # --- NEW: get or create a dev user based on the JWT ---
-        payload = getattr(request, "user", {}) or {}
-        sub = payload.get("sub", "dev-user")
-        role = payload.get("role", "researcher")
-
-        # use sub as an email-ish identifier for dev
-        dev_email = f"{sub}@example.com" if "@" not in sub else sub
-        username = dev_email.split("@")[0]
-
-        user = User.query.filter_by(email=dev_email).first()
-        if not user:
-            user = User(
-                email=dev_email,
-                username=username,
-                role=role,
-            )
-            user.set_password("dev-password")
-            db.session.add(user)
-            db.session.flush()  # ensures user.user_id is available
-
-        # Create experiment
-        experiment = Experiment(
-            user_id=user.user_id,
+        # Create experiment in CORE DB (users + experiment registry)
+        exp = Experiment(
+            user_id=request.user.get('user_id'),
             name=data['name'],
             description=data.get('description'),
-            num_stimuli=data['num_stimuli'],
-            max_trials=data['max_trials'],
-            min_trials=data.get('min_trials', 10),
-            epsilon=data.get('epsilon', 0.01),
-            exploration_weight=data.get('exploration_weight', 0.1),
-            show_progress=data.get('show_progress', True),
-            allow_breaks=data.get('allow_breaks', True),
-            break_interval=data.get('break_interval', 20),
-            enable_counterbalancing=data.get('enable_counterbalancing', True),
+            research_question=data.get('research_question'),
+            num_stimuli=int(data['num_stimuli']),
+            max_trials=int(data['max_trials']),
+            min_trials=int(data.get('min_trials', 10)),
+            epsilon=float(data.get('epsilon', 0.01)),
+            exploration_weight=float(data.get('exploration_weight', 0.1)),
+            prior_mean=float(data.get('prior_mean', 0.0)),
+            prior_variance=float(data.get('prior_variance', 1.0)),
+            convergence_threshold=float(data.get('convergence_threshold', 0.05)),
+            max_session_duration_minutes=int(data.get('max_session_duration_minutes', 30)),
+            inactivity_timeout_minutes=int(data.get('inactivity_timeout_minutes', 5)),
+            show_progress=bool(data.get('show_progress', True)),
+            allow_breaks=bool(data.get('allow_breaks', True)),
+            break_interval=int(data.get('break_interval', 20)),
+            enable_counterbalancing=bool(data.get('enable_counterbalancing', True)),
             instructions=data.get('instructions'),
             completion_message=data.get('completion_message'),
-            status='draft',
-            experiment_metadata=data.get('experiment_metadata') or {}
-
+            status=data.get('status', 'draft'),
+            experiment_metadata=data.get('experiment_metadata', {}) or {}
         )
 
-        db.session.add(experiment)
+        db.session.add(exp)
         db.session.commit()
 
-        logger.info(f"Experiment created: {experiment.experiment_id}")
+        # Create per-experiment folder + settings db (and store paths into metadata)
+        _exp_paths(exp)
 
-        return jsonify({
-            'success': True,
-            'experiment': experiment.to_dict()
-        }), 201
-
-    except IntegrityError as e:
-        db.session.rollback()
-        logger.error(f"Integrity error creating experiment: {e}")
-        return jsonify({'error': 'Database integrity error'}), 400
+        return jsonify({'success': True, 'experiment': exp.to_dict(include_stimuli=False)}), 201
 
     except Exception as e:
         db.session.rollback()
@@ -1074,75 +1155,108 @@ def update_experiment(experiment_id):
 @require_auth
 @require_roles(['admin', 'researcher'])
 def upload_stimulus(experiment_id):
-    """Upload stimulus for experiment."""
+    """
+    Upload stimulus for experiment.
+    IMPORTANT: This endpoint is used by the current frontend, so it MUST save into:
+      - per-experiment folder: experiments_data/<experimentName>/stimuli/
+      - per-experiment settings DB: <experimentName>_Setting.db (table: stimuli)
+    """
     try:
         # Check experiment exists
         experiment = Experiment.query.filter_by(experiment_id=experiment_id).first()
         if not experiment:
             return jsonify({'error': 'Experiment not found'}), 404
-        
-        # Check file in request
+
         if 'file' not in request.files:
             return jsonify({'error': 'No file provided'}), 400
-        
+
         file = request.files['file']
-        if file.filename == '':
+        if not file or file.filename == '':
             return jsonify({'error': 'No file selected'}), 400
-        
-        if not allowed_file(file.filename):
-            return jsonify({'error': 'Invalid file type'}), 400
-        
-        # Save file
+
         filename = secure_filename(file.filename)
-        unique_filename = f"{uuid.uuid4()}_{filename}"
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
-        
-        os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+        if '.' not in filename or filename.rsplit('.', 1)[1].lower() not in ALLOWED_EXTENSIONS:
+            return jsonify({'error': f'Invalid file type. Allowed: {sorted(ALLOWED_EXTENSIONS)}'}), 400
+
+        # Ensure experiment folder + settings DB exists
+        storage = experiment.experiment_metadata.get("exp_storage") if experiment.experiment_metadata else None
+        if not storage:
+            storage = _exp_paths(experiment)
+
+        stimuli_dir = storage["stimuli_dir"]
+        os.makedirs(stimuli_dir, exist_ok=True)
+
+        # Save into experiment stimuli folder
+        stimulus_id = str(uuid.uuid4())
+        ext = filename.rsplit('.', 1)[1].lower()
+        disk_name = f"{stimulus_id}.{ext}"
+        file_path = os.path.join(stimuli_dir, disk_name)
         file.save(file_path)
-        
-        # Calculate checksum
-        checksum = calculate_file_checksum(file_path)
-        
-        # Get file size
-        file_size = os.path.getsize(file_path)
-        
-        # Create stimulus record
-        stimulus = Stimulus(
-            experiment_id=experiment_id,
-            stimulus_name=filename,
-            file_path=file_path,
-            url=f'http://localhost:5000/uploads/{unique_filename}',
-            file_size_bytes=file_size,
-            mime_type=file.content_type,
-            checksum_sha256=checksum
-        )
-        
-        db.session.add(stimulus)
-        db.session.commit()
-        
-        log_audit(
-            'stimulus_uploaded',
-            'data',
-            f'Uploaded stimulus: {filename}',
-            {'stimulus_id': str(stimulus.stimulus_id), 'file_size': file_size},
-            experiment_id=experiment_id
-        )
-        
+
+        # Optional fields
+        display_order = request.form.get('display_order')
+        try:
+            display_order = int(display_order) if display_order is not None and str(display_order).strip() != '' else 0
+        except ValueError:
+            display_order = 0
+        label = request.form.get('label')
+
+        # Insert into settings DB
+        settings_db = _get_settings_db_path(experiment)
+        con = _connect_sqlite(settings_db)
+        try:
+            con.execute(
+                """
+                INSERT INTO stimuli(stimulus_id, filename, file_path, mime_type, display_order, label, tags_json, metadata_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    stimulus_id,
+                    filename,
+                    file_path,
+                    f"image/{ext}" if ext != "gif" else "image/gif",
+                    display_order,
+                    label,
+                    "[]",
+                    "{}",
+                    datetime.utcnow().isoformat()
+                )
+            )
+            con.commit()
+        finally:
+            con.close()
+
         return jsonify({
             'success': True,
-            'stimulus': stimulus.to_dict()
+            'stimulus': {
+                'stimulus_id': stimulus_id,
+                'filename': filename,
+                'display_order': display_order,
+                'label': label,
+                'url': f"/uploads/{disk_name}"
+            }
         }), 201
-        
+
     except Exception as e:
-        db.session.rollback()
         logger.error(f"Error uploading stimulus: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/uploads/<path:filename>')
 def serve_upload(filename):
-    """Serve uploaded stimulus files."""
-    upload_folder = app.config['UPLOAD_FOLDER']
-    return send_from_directory(upload_folder, filename)
+    """Serve uploaded stimulus files from experiment folders."""
+    # 1) Backward-compatible: old global folder
+    upload_folder = app.config.get('UPLOAD_FOLDER')
+    if upload_folder and os.path.exists(os.path.join(upload_folder, filename)):
+        return send_from_directory(upload_folder, filename)
+
+    # 2) New: search experiment stimuli directories
+    data_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'experiments_data'))
+    if os.path.isdir(data_root):
+        for root, dirs, files in os.walk(data_root):
+            if os.path.basename(root) == "stimuli" and filename in files:
+                return send_from_directory(root, filename)
+
+    return jsonify({'error': 'File not found'}), 404
 
 
 @app.route('/api/experiments/<experiment_id>/publish', methods=['POST'])
@@ -1157,8 +1271,13 @@ def publish_experiment(experiment_id):
             return jsonify({'error': 'Experiment not found'}), 404
         
         # Validate experiment is ready
-        if len(experiment.stimuli) < 3:
+        # Validate experiment is ready
+        # NOTE: stimuli live in the per-experiment settings DB, not the core Stimulus table.
+        settings_db = _get_settings_db_path(experiment)
+        stimuli_rows = _list_stimuli_from_settings(settings_db)
+        if len(stimuli_rows) < 3:
             return jsonify({'error': 'Need at least 3 stimuli'}), 400
+
         
         if experiment.status == 'active':
             return jsonify({'error': 'Experiment already published'}), 400
@@ -1191,72 +1310,92 @@ def publish_experiment(experiment_id):
 @app.route('/api/sessions', methods=['POST'])
 @limiter.limit(SESSIONS_RATE)
 def create_session():
-    """Create new subject session."""
+    """Create new subject session (creates a per-participant results DB: experimentName_Result_subjectId.db)."""
     try:
-        data = request.get_json()
+        data = request.get_json() or {}
         experiment_id = data.get('experiment_id')
-        
         if not experiment_id:
             return jsonify({'error': 'experiment_id required'}), 400
-        
-        # Get experiment
+
         experiment = Experiment.query.filter_by(experiment_id=experiment_id).first()
         if not experiment:
             return jsonify({'error': 'Experiment not found'}), 404
-        
         if experiment.status != 'active':
             return jsonify({'error': 'Experiment not active'}), 400
-        
-        # Create session
-        session = Session(
-            experiment_id=experiment_id,
-            session_token=generate_session_token(),
-            trials_total=experiment.max_trials,
-            subject_id=data.get('subject_id'),
-            subject_metadata=data.get('subject_metadata', {}),
-            browser_info=data.get('browser_info', {}),
-            ip_address=request.remote_addr
-        )
-        
-        db.session.add(session)
-        db.session.flush()  # Get session_id
-        
-        # Initialize algorithm state
-        n_stimuli = experiment.num_stimuli
-        mu = np.zeros(n_stimuli)
-        sigma = np.eye(n_stimuli) * experiment.prior_variance
-        comparison_matrix = np.zeros((n_stimuli, n_stimuli))
-        
-        state = AlgorithmState(
-            session_id=session.session_id,
-            mu=serialize_numpy(mu),
-            sigma=serialize_numpy(sigma),
-            comparison_matrix=serialize_numpy(comparison_matrix),
-            trials_completed=0,
-            total_trials=experiment.max_trials,
-            state_checksum=hashlib.sha256(mu.tobytes() + sigma.tobytes()).hexdigest()
-        )
-        
-        db.session.add(state)
-        db.session.commit()
-        
-        log_audit(
-            'session_created',
-            'session',
-            f'Created session for experiment: {experiment.name}',
-            {'session_id': str(session.session_id)},
-            session_id=session.session_id,
-            experiment_id=experiment_id
-        )
-        
+
+        # Ensure experiment storage exists
+        storage = experiment.experiment_metadata.get("exp_storage") if experiment.experiment_metadata else None
+        if not storage:
+            storage = _exp_paths(experiment)
+
+        subject_id = data.get('subject_id')  # optional
+        # session_token encodes experiment_id so /next and /choice can find the right settings DB
+        session_token = f"{experiment_id}_{uuid.uuid4().hex}"
+
+        result_db_path = _participant_result_db_path(experiment, subject_id or "", session_token)
+        init_participant_results_db(result_db_path)
+
+        created_at = datetime.utcnow().isoformat()
+        trials_total = int(experiment.max_trials)
+
+        # Insert session row
+        con = _connect_sqlite(result_db_path)
+        try:
+            con.execute(
+                """
+                INSERT OR REPLACE INTO sessions(
+                    session_token, experiment_id, subject_id, status, created_at, trials_total, trials_completed, current_trial,
+                    subject_metadata_json, browser_info_json, ip_address
+                ) VALUES (?, ?, ?, 'active', ?, ?, 0, 0, ?, ?, ?)
+                """,
+                (
+                    session_token, experiment_id, subject_id,
+                    created_at, trials_total,
+                    json.dumps(data.get('subject_metadata', {}) or {}),
+                    json.dumps(data.get('browser_info', {}) or {}),
+                    request.remote_addr
+                )
+            )
+
+            # Determine number of stimuli from SETTINGS DB (preferred) fallback to experiment.num_stimuli
+            settings_db = storage["settings_db"]
+            stim_rows = _list_stimuli_from_settings(settings_db)
+            n_stimuli = len(stim_rows) if len(stim_rows) >= 2 else int(experiment.num_stimuli)
+
+            # Initialize algorithm state
+            mu = np.zeros(n_stimuli)
+            sigma = np.eye(n_stimuli) * float(experiment.prior_variance)
+            comparison_matrix = np.zeros((n_stimuli, n_stimuli))
+
+            con.execute(
+                """
+                INSERT OR REPLACE INTO algorithm_state(
+                    session_token, mu, sigma, comparison_matrix, trials_completed, total_trials, state_checksum, updated_at
+                ) VALUES (?, ?, ?, ?, 0, ?, ?, ?)
+                """,
+                (
+                    session_token,
+                    serialize_numpy(mu),
+                    serialize_numpy(sigma),
+                    serialize_numpy(comparison_matrix),
+                    trials_total,
+                    hashlib.sha256(mu.tobytes() + sigma.tobytes()).hexdigest(),
+                    created_at
+                )
+            )
+            con.commit()
+        finally:
+            con.close()
+
+        # Index session_token -> result_db_path inside settings DB
+        insert_session_index(storage["settings_db"], session_token, subject_id, result_db_path, created_at)
+
         return jsonify({
             'success': True,
-            'session': session.to_dict(),
-            'session_token': session.session_token
+            'session_token': session_token
         }), 201
-        
+
     except Exception as e:
-        db.session.rollback()
         logger.error(f"Error creating session: {e}")
         return jsonify({'error': str(e)}), 500
 
@@ -1264,87 +1403,116 @@ def create_session():
 @app.route('/api/sessions/<session_token>/next', methods=['GET'])
 @limiter.limit(NEXT_RATE)
 def get_next_pair(session_token):
-    """Get next stimulus pair for session using Bayesian algorithm."""
+    """Get next stimulus pair for session using Bayesian algorithm (state stored in participant DB)."""
     try:
-        # Validate session first
-        session = Session.query.filter_by(session_token=session_token).first()
-        
-        if not session:
-            return jsonify({'error': 'Session not found'}), 404
-        
-        if session.status == 'complete':
-            return jsonify({'complete': True})
-        
-        # Check if max trials reached
-        if session.trials_completed >= session.trials_total:
-            session.status = 'complete'
-            session.completed_at = datetime.utcnow()
-            db.session.commit()
-            return jsonify({'complete': True})
-        
-        experiment = Experiment.query.filter_by(experiment_id=session.experiment_id).first()
+        # Parse experiment_id from token
+        if "_" not in session_token:
+            return jsonify({'error': 'Invalid session token'}), 400
+        experiment_id = session_token.split("_", 1)[0]
+
+        experiment = Experiment.query.filter_by(experiment_id=experiment_id).first()
         if not experiment:
-            return jsonify({'error': 'Experiment not found for session'}), 500
+            return jsonify({'error': 'Experiment not found for session'}), 404
 
-        stimuli = Stimulus.query.filter_by(experiment_id=experiment.experiment_id).all()
+        storage = experiment.experiment_metadata.get("exp_storage") if experiment.experiment_metadata else None
+        if not storage:
+            storage = _exp_paths(experiment)
 
-        
-        if len(stimuli) < 2:
+        result_db_path = lookup_result_db_for_session(storage["settings_db"], session_token)
+        if not result_db_path or not os.path.exists(result_db_path):
+            return jsonify({'error': 'Session not found'}), 404
+
+        # Load session + state
+        con = _connect_sqlite(result_db_path)
+        try:
+            sess = con.execute("SELECT * FROM sessions WHERE session_token = ?", (session_token,)).fetchone()
+            if not sess:
+                return jsonify({'error': 'Session not found'}), 404
+
+            if sess["status"] == "complete":
+                return jsonify({'complete': True})
+
+            trials_completed = int(sess["trials_completed"] or 0)
+            trials_total = int(sess["trials_total"] or 0)
+            current_trial = int(sess["current_trial"] or 0)
+
+            if trials_completed >= trials_total:
+                completed_at = datetime.utcnow().isoformat()
+                con.execute(
+                    "UPDATE sessions SET status='complete', completed_at=? WHERE session_token=?",
+                    (completed_at, session_token)
+                )
+                con.commit()
+                mark_session_complete(storage["settings_db"], session_token, completed_at)
+                return jsonify({'complete': True})
+
+            algo = con.execute("SELECT * FROM algorithm_state WHERE session_token = ?", (session_token,)).fetchone()
+            if not algo:
+                return jsonify({'error': 'Algorithm state not found'}), 500
+        finally:
+            con.close()
+
+        # Load stimuli from settings DB
+        stim_rows = _list_stimuli_from_settings(storage["settings_db"])
+        if len(stim_rows) < 2:
             return jsonify({'error': 'Not enough stimuli'}), 400
-        
-        # Load algorithm state
-        algo_state_record = AlgorithmState.query.filter_by(session_id=session.session_id).first()
-        
-        if not algo_state_record:
-            return jsonify({'error': 'Algorithm state not found'}), 500
-        
+
+        stimuli_list = [_stimulus_row_to_dict(r) for r in stim_rows]
+        n_items = len(stimuli_list)
+
         # Deserialize Bayesian state
         from bayesian_adaptive import BayesianPreferenceState, PureBayesianAdaptiveSelector
-        
-        n_items = len(stimuli)
         bayesian_state = BayesianPreferenceState(n_items)
-        bayesian_state.mu = deserialize_numpy(algo_state_record.mu, (n_items,))
-        bayesian_state.Sigma = deserialize_numpy(algo_state_record.sigma, (n_items, n_items))
-        bayesian_state.comparison_matrix = deserialize_numpy(algo_state_record.comparison_matrix, (n_items, n_items))
-        
-        # Select next pair using Bayesian algorithm
+        bayesian_state.mu = deserialize_numpy(algo["mu"], (n_items,))
+        bayesian_state.Sigma = deserialize_numpy(algo["sigma"], (n_items, n_items))
+        bayesian_state.comparison_matrix = deserialize_numpy(algo["comparison_matrix"], (n_items, n_items))
+
         selector = PureBayesianAdaptiveSelector(
-            epsilon=experiment.epsilon,
-            exploration_weight=experiment.exploration_weight
+            epsilon=float(experiment.epsilon),
+            exploration_weight=float(experiment.exploration_weight)
         )
-        
+
         i, j = selector.select_next_pair(bayesian_state)
-        
-        # Get stimuli (sorted by display_order to ensure consistent indexing)
-        stimuli_list = sorted(stimuli, key=lambda s: s.display_order or 0)
+
         pair = [stimuli_list[i], stimuli_list[j]]
-        
-        # Determine presentation order
+
         pres_order = 'AB'
         if experiment.enable_counterbalancing and np.random.rand() > 0.5:
             pair = [pair[1], pair[0]]
             pres_order = 'BA'
-        
-        # Generate pair token for validation
+
+        # Issue pair token (JWT)
         pair_token = jwt_issue_pair_token({
-            'session_id': str(session.session_id),
-            'trial_number': session.current_trial + 1,
-            'stimulus_a_id': str(pair[0].stimulus_id),
-            'stimulus_b_id': str(pair[1].stimulus_id),
+            'session_token': session_token,
+            'trial_number': current_trial + 1,
+            'stimulus_a_id': str(pair[0]['stimulus_id']),
+            'stimulus_b_id': str(pair[1]['stimulus_id']),
             'presentation_order': pres_order
         })
-        
+
         return jsonify({
             'success': True,
-            'trial_number': session.current_trial + 1,
-            'stimulus_a': pair[0].to_dict(),
-            'stimulus_b': pair[1].to_dict(),
+            'trial_number': current_trial + 1,
+            'stimulus_a': {
+                'stimulus_id': pair[0]['stimulus_id'],
+                'stimulus_name': pair[0].get('label') or pair[0].get('filename'),
+                'filename': pair[0].get('filename'),
+                'url': pair[0].get('url'),
+                'mime_type': pair[0].get('mime_type'),
+            },
+            'stimulus_b': {
+                'stimulus_id': pair[1]['stimulus_id'],
+                'stimulus_name': pair[1].get('label') or pair[1].get('filename'),
+                'filename': pair[1].get('filename'),
+                'url': pair[1].get('url'),
+                'mime_type': pair[1].get('mime_type'),
+            },
             'presentation_order': pres_order,
             'pair_token': pair_token,
-            'show_progress': experiment.show_progress,
-            'progress_percentage': (session.trials_completed / session.trials_total * 100) if session.trials_total > 0 else 0
+            'show_progress': bool(experiment.show_progress),
+            'progress_percentage': (trials_completed / trials_total * 100) if trials_total > 0 else 0
         })
-        
+
     except Exception as e:
         logger.error(f"Error getting next pair: {e}")
         return jsonify({'error': str(e)}), 500
@@ -1353,140 +1521,169 @@ def get_next_pair(session_token):
 @app.route('/api/sessions/<session_token>/choice', methods=['POST'])
 @limiter.limit(CHOICE_RATE)
 def record_choice(session_token):
-    """Record subject's choice and update Bayesian beliefs."""
+    """Record subject's choice and update Bayesian beliefs (writes to participant DB)."""
     try:
-        data = request.get_json()
-        
-        # Validate session
-        session = Session.query.filter_by(session_token=session_token).first()
-        if not session:
+        data = request.get_json() or {}
+
+        if "_" not in session_token:
+            return jsonify({'error': 'Invalid session token'}), 400
+        experiment_id = session_token.split("_", 1)[0]
+
+        experiment = Experiment.query.filter_by(experiment_id=experiment_id).first()
+        if not experiment:
+            return jsonify({'error': 'Experiment not found for session'}), 404
+
+        storage = experiment.experiment_metadata.get("exp_storage") if experiment.experiment_metadata else None
+        if not storage:
+            storage = _exp_paths(experiment)
+
+        result_db_path = lookup_result_db_for_session(storage["settings_db"], session_token)
+        if not result_db_path or not os.path.exists(result_db_path):
             return jsonify({'error': 'Session not found'}), 404
-        
+
         # Validate pair token
         pair_token = data.get('pair_token')
         if not pair_token:
             return jsonify({'error': 'Missing pair_token'}), 400
-        
         try:
             pt = jwt_decode_pair_token(pair_token)
         except Exception as e:
             return jsonify({'error': f'Invalid pair_token: {e}'}), 400
-        
-        # Verify token matches session
-        if str(session.session_id) != pt.get('session_id') or (session.current_trial + 1) != pt.get('trial_number'):
+
+        if pt.get('session_token') != session_token:
             return jsonify({'error': 'pair_token/session mismatch'}), 400
-        
-        # Validate choice data
+
         required = ['stimulus_a_id', 'stimulus_b_id', 'chosen_stimulus_id', 'response_time_ms']
         for field in required:
             if field not in data:
                 return jsonify({'error': f'Missing field: {field}'}), 400
-        
-        # Get stimuli to find their indices
-        experiment = Experiment.query.filter_by(experiment_id=session.experiment_id).first()
-        if not experiment:
-            return jsonify({'error': 'Experiment not found for session'}), 500
 
-        stimuli_list = Stimulus.query.filter_by(experiment_id=experiment.experiment_id) \
-                                    .order_by(Stimulus.display_order.asc()).all()
+        # Load stimuli list (sorted) to map ids -> indices
+        stim_rows = _list_stimuli_from_settings(storage["settings_db"])
+        if len(stim_rows) < 2:
+            return jsonify({'error': 'Not enough stimuli'}), 400
+        stimuli_list = [_stimulus_row_to_dict(r) for r in stim_rows]
 
-        
-        # Find indices
-        stimulus_a_idx = next((i for i, s in enumerate(stimuli_list) 
-                              if str(s.stimulus_id) == data['stimulus_a_id']), None)
-        stimulus_b_idx = next((i for i, s in enumerate(stimuli_list) 
-                              if str(s.stimulus_id) == data['stimulus_b_id']), None)
-        winner_idx = next((i for i, s in enumerate(stimuli_list) 
-                          if str(s.stimulus_id) == data['chosen_stimulus_id']), None)
-        
+        id_to_idx = {str(s['stimulus_id']): i for i, s in enumerate(stimuli_list)}
+        stimulus_a_idx = id_to_idx.get(str(data['stimulus_a_id']))
+        stimulus_b_idx = id_to_idx.get(str(data['stimulus_b_id']))
+        winner_idx = id_to_idx.get(str(data['chosen_stimulus_id']))
+
         if stimulus_a_idx is None or stimulus_b_idx is None or winner_idx is None:
             return jsonify({'error': 'Invalid stimulus IDs'}), 400
-        
-        # Load algorithm state
-        algo_state_record = AlgorithmState.query.filter_by(session_id=session.session_id).first()
-        
-        if not algo_state_record:
-            return jsonify({'error': 'Algorithm state not found'}), 500
-        
-        # Deserialize and update Bayesian state
-        from bayesian_adaptive import BayesianPreferenceState, PureBayesianAdaptiveSelector
-        
-        n_items = len(stimuli_list)
-        bayesian_state = BayesianPreferenceState(n_items)
-        bayesian_state.mu = deserialize_numpy(algo_state_record.mu, (n_items,))
-        bayesian_state.Sigma = deserialize_numpy(algo_state_record.sigma, (n_items, n_items))
-        bayesian_state.comparison_matrix = deserialize_numpy(algo_state_record.comparison_matrix, (n_items, n_items))
-        
-        # Update beliefs based on choice
-        selector = PureBayesianAdaptiveSelector(
-            epsilon=experiment.epsilon,
-            exploration_weight=experiment.exploration_weight
-        )
-        
-        bayesian_state = selector.update_beliefs(
-            bayesian_state, 
-            stimulus_a_idx, 
-            stimulus_b_idx, 
-            winner_idx
-        )
-        
-        # Serialize updated state
-        algo_state_record.mu = serialize_numpy(bayesian_state.mu)
-        algo_state_record.sigma = serialize_numpy(bayesian_state.Sigma)
-        algo_state_record.comparison_matrix = serialize_numpy(bayesian_state.comparison_matrix)
-        algo_state_record.trials_completed += 1
-        algo_state_record.updated_at = datetime.utcnow()
-        algo_state_record.state_checksum = hashlib.sha256(
-            bayesian_state.mu.tobytes() + bayesian_state.Sigma.tobytes()
-        ).hexdigest()
-        
-        # Create choice record
-        choice = Choice(
-            session_id=session.session_id,
-            trial_number=session.current_trial + 1,
-            stimulus_a_id=data['stimulus_a_id'],
-            stimulus_b_id=data['stimulus_b_id'],
-            chosen_stimulus_id=data['chosen_stimulus_id'],
-            response_time_ms=data['response_time_ms'],
-            presentation_order=pt.get('presentation_order'),
-            break_before=data.get('break_before', False)
-        )
-        
-        db.session.add(choice)
-        
-        # Update session
-        session.trials_completed += 1
-        session.current_trial += 1
-        session.last_activity_at = datetime.utcnow()
-        session.total_time_seconds = int((datetime.utcnow() - session.started_at).total_seconds()) if session.started_at else 0
-        
-        # Check convergence
-        if selector.check_convergence(bayesian_state, experiment.convergence_threshold):
-            session.status = 'complete'
-            session.completed_at = datetime.utcnow()
-            _evaluate_session_quality(session, experiment)
-        elif session.trials_completed >= session.trials_total:
-            session.status = 'complete'
-            session.completed_at = datetime.utcnow()
-            _evaluate_session_quality(session, experiment)
-        
-        db.session.commit()
-        
-        log_audit(
-            'choice_recorded',
-            'data',
-            f'Choice recorded: trial {choice.trial_number}',
-            {'choice_id': str(choice.choice_id), 'winner': winner_idx},
-            session_id=session.session_id
-        )
-        
-        return jsonify({
-            'success': True,
-            'complete': session.status == 'complete'
-        })
-        
+
+        # Load session + algo state
+        con = _connect_sqlite(result_db_path)
+        try:
+            sess = con.execute("SELECT * FROM sessions WHERE session_token = ?", (session_token,)).fetchone()
+            if not sess:
+                return jsonify({'error': 'Session not found'}), 404
+
+            current_trial = int(sess["current_trial"] or 0)
+            expected_trial = current_trial + 1
+            if int(pt.get('trial_number') or 0) != expected_trial:
+                return jsonify({'error': 'pair_token/session mismatch'}), 400
+
+            algo = con.execute("SELECT * FROM algorithm_state WHERE session_token = ?", (session_token,)).fetchone()
+            if not algo:
+                return jsonify({'error': 'Algorithm state not found'}), 500
+
+            from bayesian_adaptive import BayesianPreferenceState, PureBayesianAdaptiveSelector
+            n_items = len(stimuli_list)
+            bayesian_state = BayesianPreferenceState(n_items)
+            bayesian_state.mu = deserialize_numpy(algo["mu"], (n_items,))
+            bayesian_state.Sigma = deserialize_numpy(algo["sigma"], (n_items, n_items))
+            bayesian_state.comparison_matrix = deserialize_numpy(algo["comparison_matrix"], (n_items, n_items))
+
+            selector = PureBayesianAdaptiveSelector(
+                epsilon=float(experiment.epsilon),
+                exploration_weight=float(experiment.exploration_weight)
+            )
+
+            bayesian_state = selector.update_beliefs(
+                bayesian_state,
+                stimulus_a_idx,
+                stimulus_b_idx,
+                winner_idx
+            )
+
+            # Save updated state
+            new_trials_completed = int(algo["trials_completed"] or 0) + 1
+            updated_at = datetime.utcnow().isoformat()
+            checksum = hashlib.sha256(bayesian_state.mu.tobytes() + bayesian_state.Sigma.tobytes()).hexdigest()
+
+            con.execute(
+                """
+                UPDATE algorithm_state
+                   SET mu=?, sigma=?, comparison_matrix=?, trials_completed=?, state_checksum=?, updated_at=?
+                 WHERE session_token=?
+                """,
+                (
+                    serialize_numpy(bayesian_state.mu),
+                    serialize_numpy(bayesian_state.Sigma),
+                    serialize_numpy(bayesian_state.comparison_matrix),
+                    new_trials_completed,
+                    checksum,
+                    updated_at,
+                    session_token
+                )
+            )
+
+            # Insert choice row
+            con.execute(
+                """
+                INSERT INTO choices(
+                    session_token, trial_number, stimulus_a_id, stimulus_b_id, chosen_stimulus_id,
+                    response_time_ms, timestamp, presentation_order
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_token,
+                    expected_trial,
+                    str(data['stimulus_a_id']),
+                    str(data['stimulus_b_id']),
+                    str(data['chosen_stimulus_id']),
+                    int(data['response_time_ms']),
+                    updated_at,
+                    pt.get('presentation_order')
+                )
+            )
+
+            # Update session counters
+            trials_total = int(sess["trials_total"] or 0)
+            trials_completed = int(sess["trials_completed"] or 0) + 1
+            new_status = "active"
+            completed_at = None
+
+            # Completion conditions
+            if selector.check_convergence(bayesian_state, float(experiment.convergence_threshold)):
+                new_status = "complete"
+                completed_at = updated_at
+            elif trials_completed >= trials_total:
+                new_status = "complete"
+                completed_at = updated_at
+
+            con.execute(
+                """
+                UPDATE sessions
+                   SET trials_completed=?, current_trial=?, status=?,
+                       completed_at=COALESCE(?, completed_at)
+                 WHERE session_token=?
+                """,
+                (trials_completed, expected_trial, new_status, completed_at, session_token)
+            )
+
+            con.commit()
+
+        finally:
+            con.close()
+
+        if completed_at:
+            mark_session_complete(storage["settings_db"], session_token, completed_at)
+
+        return jsonify({'success': True, 'complete': bool(completed_at)})
+
     except Exception as e:
-        db.session.rollback()
         logger.error(f"Error recording choice: {e}")
         return jsonify({'error': str(e)}), 500
 
@@ -1495,39 +1692,96 @@ def record_choice(session_token):
 @require_auth
 @require_roles(['admin', 'researcher'])
 def get_results(experiment_id):
-    """Get experiment results."""
+    """Get experiment results (sessions are stored in per-participant DB files)."""
     try:
         experiment = Experiment.query.filter_by(experiment_id=experiment_id).first()
-        
         if not experiment:
             return jsonify({'error': 'Experiment not found'}), 404
-        
-        # Get sessions
-        sessions = Session.query.filter_by(experiment_id=experiment_id).all()
-        
-        # Get all choices
-        session_ids = [s.session_id for s in sessions]
-        choices = Choice.query.filter(Choice.session_id.in_(session_ids)).all()
-        
-        # Calculate statistics
+
+        storage = experiment.experiment_metadata.get("exp_storage") if experiment.experiment_metadata else None
+        if not storage:
+            storage = _exp_paths(experiment)
+
+        # Read session_index from settings DB
+        con = _connect_sqlite(storage["settings_db"])
+        try:
+            idx_rows = con.execute(
+                "SELECT * FROM session_index ORDER BY created_at DESC"
+            ).fetchall()
+            idx_rows = [dict(r) for r in idx_rows]
+        finally:
+            con.close()
+
+        sessions_out = []
+        total_choices = 0
+        total_rt = 0
+        completed_sessions = 0
+        active_sessions = 0
+
+        for r in idx_rows:
+            db_path = r.get("result_db_path")
+            if not db_path or not os.path.exists(db_path):
+                continue
+            c2 = _connect_sqlite(db_path)
+            try:
+                sess = c2.execute("SELECT * FROM sessions WHERE session_token = ?", (r["session_token"],)).fetchone()
+                if not sess:
+                    continue
+                sess = dict(sess)
+
+                # count choices for this session
+                n_choices = c2.execute(
+                    "SELECT COUNT(*) AS n FROM choices WHERE session_token = ?",
+                    (r["session_token"],)
+                ).fetchone()["n"]
+                total_choices += int(n_choices or 0)
+
+                rt_sum = c2.execute(
+                    "SELECT SUM(response_time_ms) AS s FROM choices WHERE session_token = ?",
+                    (r["session_token"],)
+                ).fetchone()["s"]
+                if rt_sum:
+                    total_rt += int(rt_sum)
+
+                status = sess.get("status") or "active"
+                if status == "complete":
+                    completed_sessions += 1
+                else:
+                    active_sessions += 1
+
+                sessions_out.append({
+                    "session_id": sess["session_token"],
+                    "session_token": sess["session_token"],
+                    "subject_id": sess.get("subject_id"),
+                    "participant_id": sess.get("subject_id"),
+                    "status": status,
+                    "created_at": sess.get("created_at"),
+                    "completed_at": sess.get("completed_at"),
+                    "trials_total": sess.get("trials_total"),
+                    "trials_completed": sess.get("trials_completed"),
+                })
+            finally:
+                c2.close()
+
+        avg_rt = (total_rt / total_choices) if total_choices > 0 else 0
+
         results = {
-            'experiment': experiment.to_dict(),
-            'summary': {
-                'total_sessions': len(sessions),
-                'completed_sessions': sum(1 for s in sessions if s.status == 'complete'),
-                'active_sessions': sum(1 for s in sessions if s.status == 'active'),
-                'total_choices': len(choices),
-                'avg_response_time_ms': sum(c.response_time_ms for c in choices) / len(choices) if choices else 0
+            "experiment": experiment.to_dict(include_stimuli=False),
+            "summary": {
+                "total_sessions": len(sessions_out),
+                "completed_sessions": completed_sessions,
+                "active_sessions": active_sessions,
+                "total_choices": total_choices,
+                "avg_response_time_ms": avg_rt
             },
-            'sessions': [s.to_dict() for s in sessions]
+            "sessions": sessions_out
         }
-        
+
         return jsonify(results)
-        
+
     except Exception as e:
         logger.error(f"Error getting results: {e}")
         return jsonify({'error': str(e)}), 500
-
 
 @app.route('/api/experiments/all', methods=['GET'])
 @require_auth
@@ -1563,64 +1817,78 @@ def get_all_experiments():
 @require_auth
 @require_roles(['admin', 'researcher'])
 def export_choices_csv(experiment_id):
-    """Export all choices for an experiment as a CSV file."""
+    """Export ALL choices for an experiment as a CSV file (aggregated across participant DBs)."""
     try:
         experiment = Experiment.query.filter_by(experiment_id=experiment_id).first()
         if not experiment:
             return jsonify({'error': 'Experiment not found'}), 404
 
-        # Find all session IDs for this experiment
-        session_ids = [s.session_id for s in Session.query.filter_by(experiment_id=experiment_id).all()]
-        if not session_ids:
+        storage = experiment.experiment_metadata.get("exp_storage") if experiment.experiment_metadata else None
+        if not storage:
+            storage = _exp_paths(experiment)
+
+        # Load session index
+        con = _connect_sqlite(storage["settings_db"])
+        try:
+            idx_rows = con.execute("SELECT * FROM session_index ORDER BY created_at ASC").fetchall()
+            idx_rows = [dict(r) for r in idx_rows]
+        finally:
+            con.close()
+
+        if not idx_rows:
             return jsonify({'error': 'No sessions found for this experiment'}), 404
 
-        # Get all choices
-        choices = Choice.query.filter(
-            Choice.session_id.in_(session_ids)
-        ).order_by(Choice.session_id, Choice.trial_number).all()
-
-        if not choices:
-            return jsonify({'error': 'No choices found for this experiment'}), 404
-
-        # Create CSV in-memory
         output = io.StringIO()
         writer = csv.writer(output)
-        
-        # Header
+
         writer.writerow([
-            'session_id', 'subject_id', 'trial_number',
+            'session_token', 'subject_id', 'trial_number',
             'stimulus_a_id', 'stimulus_b_id', 'chosen_stimulus_id',
             'response_time_ms', 'timestamp', 'presentation_order'
         ])
-        
-        # Rows
-        for choice in choices:
-            writer.writerow([
-                choice.session_id,
-                getattr(choice.session, 'subject_id', None),
-                choice.trial_number,
-                choice.stimulus_a_id,
-                choice.stimulus_b_id,
-                choice.chosen_stimulus_id,
-                choice.response_time_ms,
-                choice.timestamp.isoformat() if getattr(choice, 'timestamp', None) else '',
-                choice.presentation_order
-            ])
 
-        # Use experiment name as base for filename
-        base_name = experiment.name or f"experiment_{experiment_id[:8]}"
-        # slugify: keep only letters, numbers, underscores, dashes
-        safe_name = re.sub(r'[^A-Za-z0-9_\-]+', '_', base_name).strip('_')
+        wrote_any = False
+        for r in idx_rows:
+            db_path = r.get("result_db_path")
+            if not db_path or not os.path.exists(db_path):
+                continue
+            c2 = _connect_sqlite(db_path)
+            try:
+                subj = r.get("subject_id")
+                rows = c2.execute(
+                    """
+                    SELECT trial_number, stimulus_a_id, stimulus_b_id, chosen_stimulus_id,
+                           response_time_ms, timestamp, presentation_order
+                      FROM choices
+                     WHERE session_token = ?
+                     ORDER BY trial_number ASC
+                    """,
+                    (r["session_token"],)
+                ).fetchall()
+                for row in rows:
+                    wrote_any = True
+                    writer.writerow([
+                        r["session_token"], subj,
+                        row["trial_number"],
+                        row["stimulus_a_id"], row["stimulus_b_id"], row["chosen_stimulus_id"],
+                        row["response_time_ms"], row["timestamp"], row["presentation_order"]
+                    ])
+            finally:
+                c2.close()
 
-        filename = f"{safe_name}_choices_raw.csv"
+        if not wrote_any:
+            return jsonify({'error': 'No choices found for this experiment'}), 404
 
+        csv_bytes = output.getvalue().encode('utf-8')
+        output.close()
+
+        filename = f"{slugify(experiment.name)}_all_results_raw.csv"
         return Response(
-            output.getvalue(),
+            csv_bytes,
             mimetype='text/csv',
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"'
-            }
+            headers={'Content-Disposition': f'attachment; filename="{filename}"'}
         )
+
     except Exception as e:
         logger.error(f"Error exporting CSV: {e}")
         return jsonify({'error': str(e)}), 500
@@ -1629,100 +1897,92 @@ def export_choices_csv(experiment_id):
 @require_auth
 @require_roles(['admin', 'researcher'])
 def export_clean_choices_csv(experiment_id):
-    """Export a cleaned CSV with human-readable session and stimulus labels."""
+    """Export ALL choices for an experiment as a cleaned CSV (human-readable session + stimulus labels)."""
     try:
         experiment = Experiment.query.filter_by(experiment_id=experiment_id).first()
         if not experiment:
             return jsonify({'error': 'Experiment not found'}), 404
 
-        # Sessions ordered by creation time
-        sessions = Session.query.filter_by(experiment_id=experiment_id) \
-                                .order_by(Session.created_at.asc()).all()
-        if not sessions:
+        storage = experiment.experiment_metadata.get("exp_storage") if experiment.experiment_metadata else None
+        if not storage:
+            storage = _exp_paths(experiment)
+
+        # session ordering
+        con = _connect_sqlite(storage["settings_db"])
+        try:
+            idx_rows = con.execute("SELECT * FROM session_index ORDER BY created_at ASC").fetchall()
+            idx_rows = [dict(r) for r in idx_rows]
+        finally:
+            con.close()
+
+        if not idx_rows:
             return jsonify({'error': 'No sessions found for this experiment'}), 404
 
-        session_index = {s.session_id: idx + 1 for idx, s in enumerate(sessions)}
+        session_label = {r["session_token"]: f"S{str(i+1).zfill(3)}" for i, r in enumerate(idx_rows)}
 
-        # All stimuli for this experiment
-        stimuli = Stimulus.query.filter_by(experiment_id=experiment_id).all()
-        stim_by_id = {s.stimulus_id: s for s in stimuli}
+        # stimuli map
+        stim_rows = _list_stimuli_from_settings(storage["settings_db"])
+        stim_map = {}
+        for s in stim_rows:
+            sid = str(s["stimulus_id"])
+            label = s.get("label") or s.get("filename") or sid
+            stim_map[sid] = label
 
-        # All choices
-        session_ids = [s.session_id for s in sessions]
-        choices = Choice.query.filter(Choice.session_id.in_(session_ids)) \
-                              .order_by(Choice.session_id, Choice.trial_number).all()
-        if not choices:
-            return jsonify({'error': 'No choices found for this experiment'}), 404
-
-        # Helper to build simple session IDs
-        base_code = (experiment.name or "EXP").upper()
-        base_code = "".join(ch for ch in base_code if ch.isalnum())[:4] or "EXP"
-
-        def simple_session_id(sess):
-            idx = session_index.get(sess.session_id, 0)
-            return f"{base_code}-S{idx:03d}"
-        
-        # Build CSV in-memory
         output = io.StringIO()
         writer = csv.writer(output)
-
-        # Header
         writer.writerow([
-            'session_id',            
-            'subject_id',
-            'trial_number',
-            'stimulus_a_name',
-            'stimulus_b_name',
-            'chosen_stimulus_name',
-            'response_time_ms',
-            'elapsed_ms_from_start',  
-            'presentation_order',
-            'chosen_side'
+            'session', 'subject_id', 'trial_number',
+            'stimulus_a', 'stimulus_b', 'chosen_stimulus',
+            'response_time_ms', 'timestamp', 'presentation_order'
         ])
-        
-        # Rows
-        for choice in choices:
-            sess = choice.session
-            s_a = stim_by_id.get(choice.stimulus_a_id)
-            s_b = stim_by_id.get(choice.stimulus_b_id)
-            s_c = stim_by_id.get(choice.chosen_stimulus_id)
 
-            # Use started_at if available, else fall back to created_at
-            start_time = sess.started_at or sess.created_at
-            if choice.timestamp and start_time:
-                elapsed_ms = int((choice.timestamp - start_time).total_seconds() * 1000)
-            else:
-                elapsed_ms = ''
-            
-            chosen_side = 'A' if choice.chosen_stimulus_id == choice.stimulus_a_id else 'B'
+        wrote_any = False
+        for r in idx_rows:
+            db_path = r.get("result_db_path")
+            if not db_path or not os.path.exists(db_path):
+                continue
+            c2 = _connect_sqlite(db_path)
+            try:
+                subj = r.get("subject_id")
+                rows = c2.execute(
+                    """
+                    SELECT trial_number, stimulus_a_id, stimulus_b_id, chosen_stimulus_id,
+                           response_time_ms, timestamp, presentation_order
+                      FROM choices
+                     WHERE session_token = ?
+                     ORDER BY trial_number ASC
+                    """,
+                    (r["session_token"],)
+                ).fetchall()
+                for row in rows:
+                    wrote_any = True
+                    writer.writerow([
+                        session_label.get(r["session_token"], r["session_token"]),
+                        subj,
+                        row["trial_number"],
+                        stim_map.get(row["stimulus_a_id"], row["stimulus_a_id"]),
+                        stim_map.get(row["stimulus_b_id"], row["stimulus_b_id"]),
+                        stim_map.get(row["chosen_stimulus_id"], row["chosen_stimulus_id"]),
+                        row["response_time_ms"],
+                        row["timestamp"],
+                        row["presentation_order"]
+                    ])
+            finally:
+                c2.close()
 
-            writer.writerow([
-                simple_session_id(sess),                    # session_id (clean)
-                getattr(sess, 'subject_id', None),          # subject_id
-                choice.trial_number,                        # trial_number
-                s_a.stimulus_name if s_a else '',           # stimulus_a_name
-                s_b.stimulus_name if s_b else '',           # stimulus_b_name
-                s_c.stimulus_name if s_c else '',           # chosen_stimulus_name
-                choice.response_time_ms,                    # response_time_ms (per-trial RT)
-                elapsed_ms,                                 # elapsed_ms_from_start
-                choice.presentation_order,                  # 'AB' or 'BA'
-                chosen_side,
-            ])
+        if not wrote_any:
+            return jsonify({'error': 'No choices found for this experiment'}), 404
 
-        # Use experiment name as base for filename
-        base_name = experiment.name or f"experiment_{experiment_id[:8]}"
-        # slugify: keep only letters, numbers, underscores, dashes
-        safe_name = re.sub(r'[^A-Za-z0-9_\-]+', '_', base_name).strip('_')
+        csv_bytes = output.getvalue().encode('utf-8')
+        output.close()
 
-        filename = f"{safe_name}_choices_clean.csv"
-
+        filename = f"{slugify(experiment.name)}_all_results_clean.csv"
         return Response(
-            output.getvalue(),
+            csv_bytes,
             mimetype='text/csv',
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"'
-            }
+            headers={'Content-Disposition': f'attachment; filename="{filename}"'}
         )
+
     except Exception as e:
         logger.error(f"Error exporting clean CSV: {e}")
         return jsonify({'error': str(e)}), 500
@@ -1814,6 +2074,166 @@ def upload_debrief():
     log_audit('debrief_uploaded', 'admin', 'Uploaded debrief file', {'filename': filename})
     return jsonify({'success': True, 'filename': filename})
 
+@app.route('/api/experiments/<experiment_id>/participants/<subject_id>/export_choices_csv', methods=['GET'])
+@require_auth
+@require_roles(['admin', 'researcher'])
+def export_participant_choices_csv(experiment_id, subject_id):
+    """Export choices for ONE participant as raw CSV."""
+    try:
+        experiment = Experiment.query.filter_by(experiment_id=experiment_id).first()
+        if not experiment:
+            return jsonify({'error': 'Experiment not found'}), 404
+
+        storage = experiment.experiment_metadata.get("exp_storage") if experiment.experiment_metadata else None
+        if not storage:
+            storage = _exp_paths(experiment)
+
+        con = _connect_sqlite(storage["settings_db"])
+        try:
+            idx_rows = con.execute(
+                "SELECT * FROM session_index WHERE subject_id = ? ORDER BY created_at ASC",
+                (subject_id,)
+            ).fetchall()
+            idx_rows = [dict(r) for r in idx_rows]
+        finally:
+            con.close()
+
+        if not idx_rows:
+            return jsonify({'error': 'No sessions found for this participant'}), 404
+
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow([
+            'session_token', 'subject_id', 'trial_number',
+            'stimulus_a_id', 'stimulus_b_id', 'chosen_stimulus_id',
+            'response_time_ms', 'timestamp', 'presentation_order'
+        ])
+
+        wrote_any = False
+        for r in idx_rows:
+            db_path = r.get("result_db_path")
+            if not db_path or not os.path.exists(db_path):
+                continue
+            c2 = _connect_sqlite(db_path)
+            try:
+                rows = c2.execute(
+                    'SELECT trial_number, stimulus_a_id, stimulus_b_id, chosen_stimulus_id, '
+                    'response_time_ms, timestamp, presentation_order '
+                    'FROM choices WHERE session_token = ? ORDER BY trial_number ASC',
+                    (r["session_token"],)
+                ).fetchall()
+                for row in rows:
+                    wrote_any = True
+                    writer.writerow([
+                        r["session_token"], subject_id,
+                        row["trial_number"],
+                        row["stimulus_a_id"], row["stimulus_b_id"], row["chosen_stimulus_id"],
+                        row["response_time_ms"], row["timestamp"], row["presentation_order"]
+                    ])
+            finally:
+                c2.close()
+
+        if not wrote_any:
+            return jsonify({'error': 'No choices found for this participant'}), 404
+
+        csv_bytes = output.getvalue().encode('utf-8')
+        output.close()
+
+        safe_subj = re.sub(r'[^a-zA-Z0-9_-]+','_',subject_id)
+        filename = f"{slugify(experiment.name)}_{safe_subj}_raw.csv"
+        return Response(csv_bytes, mimetype='text/csv',
+                        headers={'Content-Disposition': f'attachment; filename="{filename}"'})
+    except Exception as e:
+        logger.error(f"Error exporting participant CSV: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/experiments/<experiment_id>/participants/<subject_id>/export_clean_choices_csv', methods=['GET'])
+@require_auth
+@require_roles(['admin', 'researcher'])
+def export_participant_clean_choices_csv(experiment_id, subject_id):
+    """Export choices for ONE participant as cleaned CSV (stimulus labels)."""
+    try:
+        experiment = Experiment.query.filter_by(experiment_id=experiment_id).first()
+        if not experiment:
+            return jsonify({'error': 'Experiment not found'}), 404
+
+        storage = experiment.experiment_metadata.get("exp_storage") if experiment.experiment_metadata else None
+        if not storage:
+            storage = _exp_paths(experiment)
+
+        con = _connect_sqlite(storage["settings_db"])
+        try:
+            idx_rows = con.execute(
+                "SELECT * FROM session_index WHERE subject_id = ? ORDER BY created_at ASC",
+                (subject_id,)
+            ).fetchall()
+            idx_rows = [dict(r) for r in idx_rows]
+        finally:
+            con.close()
+
+        if not idx_rows:
+            return jsonify({'error': 'No sessions found for this participant'}), 404
+
+        # stimuli map
+        stim_rows = _list_stimuli_from_settings(storage["settings_db"])
+        stim_map = {}
+        for s in stim_rows:
+            sid = str(s["stimulus_id"])
+            label = s.get("label") or s.get("filename") or sid
+            stim_map[sid] = label
+
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow([
+            'session', 'subject_id', 'trial_number',
+            'stimulus_a', 'stimulus_b', 'chosen_stimulus',
+            'response_time_ms', 'timestamp', 'presentation_order'
+        ])
+
+        wrote_any = False
+        for idx, r in enumerate(idx_rows):
+            db_path = r.get("result_db_path")
+            if not db_path or not os.path.exists(db_path):
+                continue
+            session_label = f"S{str(idx+1).zfill(3)}"
+            c2 = _connect_sqlite(db_path)
+            try:
+                rows = c2.execute(
+                    'SELECT trial_number, stimulus_a_id, stimulus_b_id, chosen_stimulus_id, '
+                    'response_time_ms, timestamp, presentation_order '
+                    'FROM choices WHERE session_token = ? ORDER BY trial_number ASC',
+                    (r["session_token"],)
+                ).fetchall()
+                for row in rows:
+                    wrote_any = True
+                    writer.writerow([
+                        session_label,
+                        subject_id,
+                        row["trial_number"],
+                        stim_map.get(row["stimulus_a_id"], row["stimulus_a_id"]),
+                        stim_map.get(row["stimulus_b_id"], row["stimulus_b_id"]),
+                        stim_map.get(row["chosen_stimulus_id"], row["chosen_stimulus_id"]),
+                        row["response_time_ms"],
+                        row["timestamp"],
+                        row["presentation_order"]
+                    ])
+            finally:
+                c2.close()
+
+        if not wrote_any:
+            return jsonify({'error': 'No choices found for this participant'}), 404
+
+        csv_bytes = output.getvalue().encode('utf-8')
+        output.close()
+
+        safe_subj = re.sub(r'[^a-zA-Z0-9_-]+','_',subject_id)
+        filename = f"{slugify(experiment.name)}_{safe_subj}_clean.csv"
+        return Response(csv_bytes, mimetype='text/csv',
+                        headers={'Content-Disposition': f'attachment; filename="{filename}"'})
+    except Exception as e:
+        logger.error(f"Error exporting participant clean CSV: {e}")
+        return jsonify({'error': str(e)}), 500
 
 # ============================================================================
 # ERROR HANDLERS
@@ -1849,12 +2269,12 @@ def index():
     return serve_frontend('admin_PATCHED.html')
 # ----------------------------------------
 if __name__ == '__main__':
-    # Automatically create the offline database file and tables on click
+    # Automatically create the offline core database file and tables on click
     with app.app_context():
-        db.create_all()                    # core tables
-        db.create_all(bind_key='results')  # results tables
+        # Core tables (users + experiments registry)
+        db.create_all()
         print("SUCCESS: Core DB Initialized at:", app.config['SQLALCHEMY_DATABASE_URI'])
-        print("SUCCESS: Results DB Initialized at:", app.config['SQLALCHEMY_BINDS']['results'])
+
 
     
     app.run(

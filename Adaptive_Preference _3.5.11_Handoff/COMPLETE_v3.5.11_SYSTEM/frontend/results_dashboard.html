@@ -265,6 +265,7 @@
               <th>Participant</th>
               <th>Started</th>
               <th>Completed</th>
+              <th>Export</th>
             </tr>
           </thead>
           <tbody id="sessionsBody">
@@ -366,25 +367,60 @@
       renderSessionsTable();
     }
 
-    function renderSessionsTable() {
-      const body = document.getElementById('sessionsBody');
-      const sessions = state.filteredSessions;
-      if (!sessions || sessions.length === 0) {
-        body.innerHTML = '<tr><td colspan="5" class="muted" style="padding:12px;">No sessions match the current filters.</td></tr>';
-        return;
-      }
-      body.innerHTML = '';
-      sessions.forEach(s => {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-          <td>${shortSessionId(s)}</td>
-          <td>${shortParticipantId(s)}</td>
-          <td>${formatDateTime(s.created_at)}</td>
-          <td>${formatDateTime(s.completed_at)}</td>
-        `;
-        body.appendChild(tr);
-      });
+function renderSessionsTable() {
+  const body = document.getElementById('sessionsBody');
+  const sessions = state.filteredSessions;
+
+  if (!sessions || sessions.length === 0) {
+    body.innerHTML = '<tr><td colspan="5" class="muted" style="padding:12px;">No sessions match the current filters.</td></tr>';
+    return;
+  }
+
+  body.innerHTML = '';
+  sessions.forEach(s => {
+    const tr = document.createElement('tr');
+
+    const tdSession = document.createElement('td');
+    tdSession.textContent = shortSessionId(s);
+
+    const tdParticipant = document.createElement('td');
+    tdParticipant.textContent = shortParticipantId(s);
+
+    const tdStarted = document.createElement('td');
+    tdStarted.textContent = formatDateTime(s.created_at);
+
+    const tdCompleted = document.createElement('td');
+    tdCompleted.textContent = formatDateTime(s.completed_at);
+
+    const tdExport = document.createElement('td');
+    const pid = (s.subject_id || s.participant_id || '').toString().trim();
+    if (!pid) {
+      tdExport.innerHTML = '<span class="muted">—</span>';
+    } else {
+      const rawBtn = document.createElement('button');
+      rawBtn.className = 'btn btn-secondary btn-sm';
+      rawBtn.textContent = 'Raw';
+      rawBtn.onclick = () => exportParticipantCsv(pid, 'raw');
+
+      const cleanBtn = document.createElement('button');
+      cleanBtn.className = 'btn btn-secondary btn-sm';
+      cleanBtn.style.marginLeft = '6px';
+      cleanBtn.textContent = 'Clean';
+      cleanBtn.onclick = () => exportParticipantCsv(pid, 'clean');
+
+      tdExport.appendChild(rawBtn);
+      tdExport.appendChild(cleanBtn);
     }
+
+    tr.appendChild(tdSession);
+    tr.appendChild(tdParticipant);
+    tr.appendChild(tdStarted);
+    tr.appendChild(tdCompleted);
+    tr.appendChild(tdExport);
+
+    body.appendChild(tr);
+  });
+}
 
     function renderStimuliSummary(stimuliStats) {
       const card = document.getElementById('stimuliCard');
@@ -430,6 +466,39 @@
 
       return filename || null;
     }
+
+    async function exportParticipantCsv(participantId, kind) {
+      const params = new URLSearchParams(window.location.search);
+      const experimentId = params.get('exp');
+      if (!experimentId) { alert('No experiment ID provided'); return; }
+      if (!participantId) { alert('Missing participant id'); return; }
+
+      try {
+        const endpoint = kind === 'raw'
+          ? `${API_BASE}/experiments/${experimentId}/participants/${encodeURIComponent(participantId)}/export_choices_csv`
+          : `${API_BASE}/experiments/${experimentId}/participants/${encodeURIComponent(participantId)}/export_clean_choices_csv`;
+
+        const resp = await fetch(endpoint, { headers: { ...authHeader() } });
+        if (!resp.ok) throw new Error(`Export failed (${resp.status})`);
+
+        const cdHeader = resp.headers.get('Content-Disposition');
+        let filename = getFilenameFromContentDisposition(cdHeader) || `participant_${participantId}_${kind}.csv`;
+
+        const blob = await resp.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+      } catch (err) {
+        console.error(err);
+        alert(err.message || 'Export failed');
+      }
+    }
+
 
 
     async function exportCsv(kind) {
