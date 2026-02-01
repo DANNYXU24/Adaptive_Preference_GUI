@@ -583,17 +583,19 @@
                     Your responses will help us understand visual preferences.
                 </div>
 
-                <div class="form-group" id="subjectIdGroup">
-                    <label>Your Participant ID</label>
-                    <div
-                        id="subjectIdDisplay"
-                        style="padding:8px 10px;border-radius:8px;background:#0b1020;border:1px solid #2a3359;display:inline-block;min-width:120px;">
-                        <!-- Filled automatically from the URL by the researcher (e.g., ?sub=EXP1-S001) -->
-                    </div>
-                    <p style="font-size: 13px; color: #a0aec0; margin-top: 6px;">
-                        The researcher will assign this ID; please confirm it matches the one you were given.
-                    </p>
-                </div>
+            <div class="form-group" id="subjectIdGroup">
+                <label for="subjectIdInput">Participant ID</label>
+                <input id="subjectIdInput" type="text" placeholder="e.g., S001" style="width:100%;padding:10px;border-radius:10px;border:1px solid #2a3359;background:#0b1020;color:#e2e8f0;" />
+                <p style="font-size: 13px; color: #a0aec0; margin-top: 6px;">
+                    If your researcher gave you an ID, type it here.
+                </p>
+            </div>
+
+            <div class="form-group" id="subjectNameGroup">
+                <label for="subjectNameInput">Subject Name</label>
+                <input id="subjectNameInput" type="text" placeholder="Optional" style="width:100%;padding:10px;border-radius:10px;border:1px solid #2a3359;background:#0b1020;color:#e2e8f0;" />
+            </div>
+
             </div>
             
             <div class="button-container">
@@ -768,22 +770,27 @@
                 return;
             }
 
-            // Read participant ID from URL (e.g., ?sub=EXP1-S001)
+            // Prefill participant info from URL (editable)
             const subjectParam = urlParams.get('sub');
-            if (subjectParam) {
+            const nameParam = urlParams.get('name');
+
+            const idInput = document.getElementById('subjectIdInput');
+            const nameInput = document.getElementById('subjectNameInput');
+
+            if (subjectParam && idInput) {
+                idInput.value = subjectParam;
                 state.subjectId = subjectParam;
-                const displayEl = document.getElementById('subjectIdDisplay');
-                if (displayEl) {
-                    displayEl.textContent = subjectParam;
-                }
             } else {
                 state.subjectId = null;
-                const groupEl = document.getElementById('subjectIdGroup');
-                if (groupEl) {
-                    // Hide the whole block if no ID is provided in the URL
-                    groupEl.style.display = 'none';
-                }
             }
+
+            if (nameParam && nameInput) {
+                nameInput.value = nameParam;
+                state.subjectName = nameParam;
+            } else {
+                state.subjectName = null;
+            }
+
             
             try {
                 // Get experiment ID from URL
@@ -840,8 +847,13 @@
                 return;
             }
 
-            // Use subject ID determined from URL (?sub=...) during initialize()
-            const subjectId = state.subjectId;
+            // Read from editable fields
+            const subjectId = (document.getElementById('subjectIdInput')?.value || '').trim() || null;
+            const subjectName = (document.getElementById('subjectNameInput')?.value || '').trim() || null;
+
+            state.subjectId = subjectId;
+            state.subjectName = subjectName;
+
 
             // Disable button while we create the session
             const startBtn = document.querySelector('#screen-instructions .btn-primary');
@@ -859,6 +871,11 @@
                         language: navigator.language
                     }
                 };
+
+                if (subjectName) {
+                    payload.subject_metadata = { subject_name: subjectName };
+                }
+
                 if (subjectId) {
                     payload.subject_id = subjectId;
                 }

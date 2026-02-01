@@ -1338,6 +1338,9 @@ def create_session():
         created_at = datetime.utcnow().isoformat()
         trials_total = int(experiment.max_trials)
 
+        subject_meta = data.get('subject_metadata', {}) or {}
+        subject_name = subject_meta.get('subject_name')
+
         # Insert session row
         con = _connect_sqlite(result_db_path)
         try:
@@ -1351,7 +1354,7 @@ def create_session():
                 (
                     session_token, experiment_id, subject_id,
                     created_at, trials_total,
-                    json.dumps(data.get('subject_metadata', {}) or {}),
+                    json.dumps(subject_meta),
                     json.dumps(data.get('browser_info', {}) or {}),
                     request.remote_addr
                 )
@@ -1388,7 +1391,8 @@ def create_session():
             con.close()
 
         # Index session_token -> result_db_path inside settings DB
-        insert_session_index(storage["settings_db"], session_token, subject_id, result_db_path, created_at)
+        insert_session_index(storage["settings_db"], session_token, subject_id, subject_name, result_db_path, created_at)
+
 
         return jsonify({
             'success': True,
@@ -1399,6 +1403,95 @@ def create_session():
         logger.error(f"Error creating session: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/sessions/<session_token>/subject', methods=['PUT'])
+@limiter.limit(SESSIONS_RATE)
+def update_session_subject(session_token):
+    """
+    Update participant ID (subject_id) and/or subject_name for a session.
+    Persists to:
+      - per-participant results DB: sessions.subject_id + sessions.subject_metadata_json
+      - per-experiment settings DB: session_index.subject_id + session_index.subject_name
+    """
+    try:
+        data = request.get_json() or {}
+
+        new_subject_id = (data.get("subject_id") or "").strip() or None
+        new_subject_name = (data.get("subject_name") or "").strip() or None
+
+        if "_" not in session_token:
+            return jsonify({'error': 'Invalid session token'}), 400
+        experiment_id = session_token.split("_", 1)[0]
+
+        experiment = Experiment.query.filter_by(experiment_id=experiment_id).first()
+        if not experiment:
+            return jsonify({'error': 'Experiment not found for session'}), 404
+
+        storage = experiment.experiment_metadata.get("exp_storage") if experiment.experiment_metadata else None
+        if not storage:
+            storage = _exp_paths(experiment)
+
+        settings_db = storage["settings_db"]
+        result_db_path = lookup_result_db_for_session(settings_db, session_token)
+        if not result_db_path or not os.path.exists(result_db_path):
+            return jsonify({'error': 'Session not found'}), 404
+
+        # --- Update participant results DB ---
+        con = _connect_sqlite(result_db_path)
+        try:
+            sess = con.execute("SELECT * FROM sessions WHERE session_token = ?", (session_token,)).fetchone()
+            if not sess:
+                return jsonify({'error': 'Session not found'}), 404
+
+            subject_meta = json.loads(sess["subject_metadata_json"] or "{}")
+            if new_subject_name is not None:
+                subject_meta["subject_name"] = new_subject_name
+
+            updated_subject_id = new_subject_id if new_subject_id is not None else sess["subject_id"]
+
+            con.execute(
+                "UPDATE sessions SET subject_id = ?, subject_metadata_json = ? WHERE session_token = ?",
+                (updated_subject_id, json.dumps(subject_meta), session_token)
+            )
+            con.commit()
+        finally:
+            con.close()
+
+        # --- Update experiment settings DB index ---
+        scon = _connect_sqlite(settings_db)
+        try:
+            cols = [r["name"] for r in scon.execute("PRAGMA table_info(session_index)").fetchall()]
+            if "subject_name" not in cols:
+                scon.execute("ALTER TABLE session_index ADD COLUMN subject_name TEXT;")
+
+            # If caller didn't send a field, keep existing
+            row = scon.execute(
+                "SELECT subject_id, subject_name FROM session_index WHERE session_token = ?",
+                (session_token,)
+            ).fetchone()
+            if not row:
+                return jsonify({'error': 'Session not found'}), 404
+
+            final_subject_id = new_subject_id if new_subject_id is not None else row["subject_id"]
+            final_subject_name = new_subject_name if new_subject_name is not None else row.get("subject_name")
+
+            scon.execute(
+                "UPDATE session_index SET subject_id = ?, subject_name = ? WHERE session_token = ?",
+                (final_subject_id, final_subject_name, session_token)
+            )
+            scon.commit()
+        finally:
+            scon.close()
+
+        return jsonify({
+            "success": True,
+            "session_token": session_token,
+            "subject_id": final_subject_id,
+            "subject_name": final_subject_name
+        })
+
+    except Exception as e:
+        logger.error(f"Error updating session subject: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/sessions/<session_token>/next', methods=['GET'])
 @limiter.limit(NEXT_RATE)
@@ -1461,7 +1554,7 @@ def get_next_pair(session_token):
         n_items = len(stimuli_list)
 
         # Deserialize Bayesian state
-        from bayesian_adaptive import BayesianPreferenceState, PureBayesianAdaptiveSelector
+        from backend.bayesian_adaptive import BayesianPreferenceState, PureBayesianAdaptiveSelector
         bayesian_state = BayesianPreferenceState(n_items)
         bayesian_state.mu = deserialize_numpy(algo["mu"], (n_items,))
         bayesian_state.Sigma = deserialize_numpy(algo["sigma"], (n_items, n_items))
@@ -1588,7 +1681,8 @@ def record_choice(session_token):
             if not algo:
                 return jsonify({'error': 'Algorithm state not found'}), 500
 
-            from bayesian_adaptive import BayesianPreferenceState, PureBayesianAdaptiveSelector
+            from backend.bayesian_adaptive import BayesianPreferenceState, PureBayesianAdaptiveSelector
+
             n_items = len(stimuli_list)
             bayesian_state = BayesianPreferenceState(n_items)
             bayesian_state.mu = deserialize_numpy(algo["mu"], (n_items,))

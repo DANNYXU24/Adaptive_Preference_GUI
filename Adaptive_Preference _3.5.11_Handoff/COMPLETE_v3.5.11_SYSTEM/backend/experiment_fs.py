@@ -136,7 +136,14 @@ def init_settings_db(settings_db_path: str) -> None:
                 completed_at TEXT
             );
             """
+            
         )
+
+        # ---- MIGRATION: add subject_name column if missing ----
+        cols = [r["name"] for r in con.execute("PRAGMA table_info(session_index)").fetchall()]
+        if "subject_name" not in cols:
+            con.execute("ALTER TABLE session_index ADD COLUMN subject_name TEXT;")
+        
         con.commit()
     finally:
         con.close()
@@ -207,7 +214,15 @@ def lookup_result_db_for_session(settings_db_path: str, session_token: str) -> O
         con.close()
 
 
-def insert_session_index(settings_db_path: str, session_token: str, subject_id: Optional[str], result_db_path: str, created_at_iso: str) -> None:
+def insert_session_index(
+    settings_db_path: str,
+    session_token: str,
+    subject_id: Optional[str],
+    subject_name: Optional[str],
+    result_db_path: str,
+    created_at_iso: str
+) -> None:
+
     con = _connect(settings_db_path)
     try:
         con.execute(
