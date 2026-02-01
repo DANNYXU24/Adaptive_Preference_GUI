@@ -828,6 +828,34 @@
                 } else {
                     console.warn('openConsent function not found - consent modal not shown');
                 }
+                // ✅ Restore saved session token + participant info so refresh can resume
+                try {
+                    const expId = state.experimentConfig.experiment_id;
+                    const savedToken = localStorage.getItem(`ap_session_${expId}`);
+                    if (savedToken) {
+                        state.sessionToken = savedToken;
+
+                        // Restore subject fields (optional)
+                        const savedSub = localStorage.getItem(`ap_subject_${expId}`);
+                        if (savedSub) {
+                            const parsed = JSON.parse(savedSub);
+                            if (parsed?.subject_id && document.getElementById('subjectIdInput')) {
+                                document.getElementById('subjectIdInput').value = parsed.subject_id;
+                                state.subjectId = parsed.subject_id;
+                            }
+                            if (parsed?.subject_name && document.getElementById('subjectNameInput')) {
+                                document.getElementById('subjectNameInput').value = parsed.subject_name;
+                                state.subjectName = parsed.subject_name;
+                            }
+                        }
+
+                        // Change Begin button label to make it clear it will resume
+                        const startBtn = document.querySelector('#screen-instructions .btn-primary');
+                        if (startBtn) startBtn.textContent = 'Resume Study';
+                    }
+                } catch (e) {
+                    console.warn('Unable to restore saved session:', e);
+                }
 
                 // Show instructions
                 showScreen('instructions');
@@ -846,6 +874,23 @@
                 loadNextTrial();
                 return;
             }
+
+            // ✅ If a prior session exists (e.g., user refreshed), resume instead of creating a new one
+            if (state.sessionToken) {
+                try {
+                    state.sessionStartTime = Date.now();
+                    await loadNextTrial();  // resume from server state
+                    return;
+                } catch (e) {
+                    console.warn('Resume failed, clearing saved session and creating a new one:', e);
+                    try {
+                        localStorage.removeItem(`ap_session_${state.experimentConfig.experiment_id}`);
+                    } catch (_) {}
+                    state.sessionToken = null;
+                    // fall through to normal session creation
+                }
+            }
+
 
             // Read from editable fields
             const subjectId = (document.getElementById('subjectIdInput')?.value || '').trim() || null;
@@ -890,8 +935,20 @@
                 const sessionData = await sessionResponse.json();
                 state.sessionToken = sessionData.session_token;
 
+                // ✅ persist session so refresh can resume
+                try {
+                    localStorage.setItem(`ap_session_${state.experimentConfig.experiment_id}`, state.sessionToken);
+                    localStorage.setItem(`ap_subject_${state.experimentConfig.experiment_id}`, JSON.stringify({
+                        subject_id: state.subjectId,
+                        subject_name: state.subjectName
+                    }));
+                } catch (e) {
+                    console.warn('localStorage unavailable:', e);
+                }
+
                 state.sessionStartTime = Date.now();
                 loadNextTrial();
+
             } catch (error) {
                 console.error('Error starting experiment:', error);
                 showError('Failed to start the experiment session. Please refresh.');
@@ -935,6 +992,10 @@
                 return;
             }
             
+            if (!state.sessionToken) {
+                throw new Error('No session token available');
+            }
+
                 try {
                     // Check for break
                     if (shouldShowBreak()) {
