@@ -549,7 +549,8 @@ async function devLogin() {
 
     function openSubjectWithId(exp) {
       const pid = buildParticipantId(exp);
-      const url = `subject_interface_complete.html?exp=${encodeURIComponent(exp.experiment_id)}&sub=${encodeURIComponent(pid)}`;
+      // FIX: Added &force_new=true to tell the subject interface to ignore previous sessions
+      const url = `subject_interface_complete.html?exp=${encodeURIComponent(exp.experiment_id)}&sub=${encodeURIComponent(pid)}&force_new=true`;
       window.open(url, '_blank');
     }
 

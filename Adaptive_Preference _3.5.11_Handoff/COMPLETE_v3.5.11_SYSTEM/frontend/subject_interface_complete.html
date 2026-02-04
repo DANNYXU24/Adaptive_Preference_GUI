@@ -800,7 +800,16 @@
                     showError('No experiment specified. Please use a valid experiment link.');
                     return;
                 }
-
+                // If the Admin Dashboard requested a forced new session, clear the old one.
+                if (urlParams.get('force_new') === 'true') {
+                    console.log('Force new session requested. Clearing previous session data.');
+                    try {
+                        localStorage.removeItem(`ap_session_${experimentId}`);
+                        localStorage.removeItem(`ap_subject_${experimentId}`);
+                        // Also clear the sessionToken in state just to be safe
+                        state.sessionToken = null;
+                    } catch(e) { console.warn('Could not clear local storage', e); }
+                }
                 // Load experiment config
                 const expResponse = await fetch(`${API_BASE}/experiments/${experimentId}`);
                 if (!expResponse.ok) throw new Error('Experiment not found');
