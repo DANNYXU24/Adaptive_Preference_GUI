@@ -2679,11 +2679,14 @@ def get_results(experiment_id):
                     completed_sessions += 1
                 else:
                     active_sessions += 1
-
                 sessions_out.append({
                     "session_id": sess["session_token"],
                     "session_token": sess["session_token"],
                     "subject_id": sess.get("subject_id"),
+                    
+                    # --- FIX: Read subject_name from the session index row (r) ---
+                    "subject_name": r.get("subject_name"), 
+                    
                     "participant_id": sess.get("subject_id"),
                     "status": status,
                     "created_at": sess.get("created_at"),
@@ -2691,6 +2694,7 @@ def get_results(experiment_id):
                     "trials_total": sess.get("trials_total"),
                     "trials_completed": sess.get("trials_completed"),
                 })
+
             finally:
                 c2.close()
 

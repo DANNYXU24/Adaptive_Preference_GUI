@@ -180,6 +180,18 @@
       color:#fed7d7;
       border:1px solid rgba(252,129,129,0.5);
     }
+
+    .pill-progress {
+      background: rgba(102, 126, 234, 0.12);
+      color: #667eea;
+      border: 1px solid rgba(102, 126, 234, 0.5);
+    }
+    .pill-neutral {
+      background: rgba(154, 163, 199, 0.12);
+      color: #9aa3c7;
+      border: 1px solid #4b546f;
+    }
+
     .muted { color:#9aa3c7; font-size:13px; }
 
     .section-title {
@@ -230,7 +242,7 @@
       </div>
     </div>
 
-    <div class="grid">
+<div class="grid">
       <div class="metric">
         <div class="label">Total Sessions</div>
         <div class="value" id="m_total_sessions">-</div>
@@ -244,8 +256,7 @@
         <div class="value" id="m_active">-</div>
       </div>
       <div class="metric">
-        <div class="label">Total Choices</div>
-        <div class="value" id="m_choices">-</div>
+        <div class="label">Total Pairs</div> <div class="value" id="m_choices">-</div>
       </div>
     </div>
 
@@ -272,19 +283,26 @@
         <table>
           <thead>
             <tr>
+              <th>Subject Name</th>
               <th>Session</th>
-              <th>Participant</th>
+              <th>Participant ID</th>
+              <th>Status</th>
               <th>Started</th>
               <th>Completed</th>
               <th>Export</th>
             </tr>
           </thead>
           <tbody id="sessionsBody">
-            <tr><td colspan="5" class="muted" style="padding:12px;">Loading…</td></tr>
+            <tr><td colspan="7" class="muted" style="padding:12px;">Loading…</td></tr>
           </tbody>
         </table>
       </div>
     </div>
+
+    <div style="margin-top: 12px;">
+        <button class="btn btn-sm" onclick="openAddSubjectModal()">+ Add Subject</button>
+      </div>
+      </div> ```
 
     <div class="card" id="stimuliCard" style="display:none;">
       <div class="section-title">
@@ -306,6 +324,22 @@
       </div>
     </div>
   </div>
+
+  <dialog id="addSubjectDialog" style="padding: 20px; border-radius: 12px; border: 1px solid #2a3359; background: #121a35; color: #e8ecff; min-width: 300px; backdrop-filter: blur(4px);">
+    <h3 style="margin-top: 0; margin-bottom: 16px;">Add Subject</h3>
+    <div style="margin-bottom: 16px;">
+        <label style="display:block; margin-bottom:6px; font-size:12px; color:#9aa3c7; text-transform:uppercase; letter-spacing:.05em;">Subject Name</label>
+        <input id="newSubjectName" type="text" placeholder="e.g. John Doe" style="width:100%; padding:10px; border-radius:6px; border:1px solid #2a3359; background:#0b1020; color:white;">
+    </div>
+    <div style="margin-bottom: 24px;">
+        <label style="display:block; margin-bottom:6px; font-size:12px; color:#9aa3c7; text-transform:uppercase; letter-spacing:.05em;">Participant ID</label>
+        <input id="newSubjectId" type="text" placeholder="e.g. P101" style="width:100%; padding:10px; border-radius:6px; border:1px solid #2a3359; background:#0b1020; color:white;">
+    </div>
+    <div style="display:flex; justify-content:flex-end; gap:10px;">
+        <button class="btn btn-secondary btn-sm" onclick="document.getElementById('addSubjectDialog').close()">Cancel</button>
+        <button class="btn btn-sm" onclick="saveNewSubject()">Add & Pre-fill</button>
+    </div>
+</dialog>
 
   <script>
     const API_BASE = 'http://127.0.0.1:5000/api';
@@ -346,6 +380,40 @@
       return '—';
     }
 
+    function openAddSubjectModal() {
+        document.getElementById('newSubjectName').value = '';
+        document.getElementById('newSubjectId').value = '';
+        document.getElementById('addSubjectDialog').showModal();
+    }
+
+    async function saveNewSubject() {
+        const name = document.getElementById('newSubjectName').value.trim();
+        const pid = document.getElementById('newSubjectId').value.trim();
+        if (!name || !pid) return alert('Please enter both Name and Participant ID');
+
+        const params = new URLSearchParams(window.location.search);
+        const expId = params.get('exp');
+        
+        try {
+            // Create the session immediately (status will be active but 0 trials -> 'Not Started')
+            const resp = await fetch(`${API_BASE}/sessions`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...authHeader() },
+                body: JSON.stringify({
+                    experiment_id: expId,
+                    subject_id: pid,
+                    subject_metadata: { subject_name: name }
+                })
+            });
+            if (!resp.ok) throw new Error('Failed to create session');
+            
+            document.getElementById('addSubjectDialog').close();
+            loadResults(); // Refresh table to show the new row
+        } catch(e) {
+            alert(e.message);
+        }
+    }
+
     function renderMetrics(summary) {
       document.getElementById('m_total_sessions').innerText = summary.total_sessions ?? '-';
       document.getElementById('m_completed').innerText     = summary.completed_sessions ?? '-';
@@ -381,12 +449,12 @@
       renderSessionsTable();
     }
 
-    function renderSessionsTable() {
+function renderSessionsTable() {
       const body = document.getElementById('sessionsBody');
       const sessions = state.filteredSessions;
 
       if (!sessions || sessions.length === 0) {
-        body.innerHTML = '<tr><td colspan="5" class="muted" style="padding:12px;">No sessions match the current filters.</td></tr>';
+        body.innerHTML = '<tr><td colspan="7" class="muted" style="padding:12px;">No sessions match the current filters.</td></tr>';
         return;
       }
 
@@ -394,18 +462,59 @@
       sessions.forEach(s => {
         const tr = document.createElement('tr');
 
+        // 1. Subject Name (Clickable Link)
+        const tdName = document.createElement('td');
+        if (s.subject_name) {
+            const link = document.createElement('a');
+            link.textContent = s.subject_name;
+            link.style.color = '#667eea'; // Accent color
+            link.style.fontWeight = '600';
+            link.style.cursor = 'pointer';
+            link.style.textDecoration = 'none';
+            // PASS THE TOKEN so the interface resumes THIS session instead of creating a new one
+            const url = `subject_interface_complete.html?exp=${encodeURIComponent(s.experiment_id || '')}&sub=${encodeURIComponent(s.subject_id || '')}&name=${encodeURIComponent(s.subject_name)}&token=${s.session_token}`;
+            link.href = url;
+            link.target = '_blank';
+            
+            link.onmouseover = () => link.style.textDecoration = 'underline';
+            link.onmouseout = () => link.style.textDecoration = 'none';
+            
+            tdName.appendChild(link);
+        } else {
+            tdName.textContent = '—';
+        }
+        
+        // 2. Session ID
         const tdSession = document.createElement('td');
         tdSession.textContent = shortSessionId(s);
 
+        // 3. Participant ID
         const tdParticipant = document.createElement('td');
         tdParticipant.textContent = shortParticipantId(s);
 
+        // 4. Status
+        const tdStatus = document.createElement('td');
+        let statusHtml = '';
+        const trialsComp = s.trials_completed || 0;
+        
+        if (s.status === 'complete') {
+            statusHtml = '<span class="pill pill-ok">Finished</span>';
+        } else if (trialsComp > 0) {
+            statusHtml = '<span class="pill pill-progress">In Progress</span>';
+        } else {
+            statusHtml = '<span class="pill pill-neutral">Not Started</span>';
+        }
+        tdStatus.innerHTML = statusHtml;
+
+        // 5. Started
         const tdStarted = document.createElement('td');
         tdStarted.textContent = formatDateTime(s.created_at);
 
+        // 6. Completed
         const tdCompleted = document.createElement('td');
         tdCompleted.textContent = formatDateTime(s.completed_at);
 
+        // 7. Export
         const tdExport = document.createElement('td');
         const pid = (s.subject_id || s.participant_id || '').toString().trim();
         if (!pid) {
@@ -426,8 +535,10 @@
           tdExport.appendChild(cleanBtn);
         }
 
+        tr.appendChild(tdName);
         tr.appendChild(tdSession);
         tr.appendChild(tdParticipant);
+        tr.appendChild(tdStatus);
         tr.appendChild(tdStarted);
         tr.appendChild(tdCompleted);
         tr.appendChild(tdExport);
@@ -435,8 +546,7 @@
         body.appendChild(tr);
       });
     }
-
-    function renderStimuliSummary(stimuliStats) {
+        function renderStimuliSummary(stimuliStats) {
       const card = document.getElementById('stimuliCard');
       const body = document.getElementById('stimuliBody');
       if (!stimuliStats || !stimuliStats.length) {

@@ -225,17 +225,22 @@ def insert_session_index(
 
     con = _connect(settings_db_path)
     try:
+        # Check if column exists, if not add it (Migration for older databases)
+        cols = [r["name"] for r in con.execute("PRAGMA table_info(session_index)").fetchall()]
+        if "subject_name" not in cols:
+            con.execute("ALTER TABLE session_index ADD COLUMN subject_name TEXT;")
+
+        # Now insert with subject_name
         con.execute(
             """
-            INSERT OR REPLACE INTO session_index(session_token, subject_id, result_db_path, created_at)
-            VALUES (?, ?, ?, ?)
+            INSERT OR REPLACE INTO session_index(session_token, subject_id, subject_name, result_db_path, created_at)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (session_token, subject_id, result_db_path, created_at_iso)
+            (session_token, subject_id, subject_name, result_db_path, created_at_iso)
         )
         con.commit()
     finally:
         con.close()
-
 
 def mark_session_complete(settings_db_path: str, session_token: str, completed_at_iso: str) -> None:
     con = _connect(settings_db_path)

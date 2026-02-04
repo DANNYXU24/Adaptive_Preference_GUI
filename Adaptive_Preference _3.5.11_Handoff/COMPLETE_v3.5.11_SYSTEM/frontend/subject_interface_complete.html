@@ -770,6 +770,32 @@
                 return;
             }
 
+            // Check if we were passed a specific session token (e.g. from Admin Dashboard)
+            const urlToken = urlParams.get('token');
+            if (urlToken) {
+                console.log('Adopting session token from URL:', urlToken);
+                state.sessionToken = urlToken;
+                
+                // Persist it immediately so refreshes work
+                const expId = urlParams.get('exp');
+                if (expId) {
+                    localStorage.setItem(`ap_session_${expId}`, urlToken);
+                    
+                    // Also update subject info in local storage if present
+                    if (urlParams.get('sub')) {
+                        state.subjectId = urlParams.get('sub');
+                    }
+                    if (urlParams.get('name')) {
+                        state.subjectName = urlParams.get('name');
+                    }
+                    
+                    localStorage.setItem(`ap_subject_${expId}`, JSON.stringify({
+                        id: state.subjectId,
+                        name: state.subjectName
+                    }));
+                }
+            }
+
             // Prefill participant info from URL (editable)
             const subjectParam = urlParams.get('sub');
             const nameParam = urlParams.get('name');
@@ -877,96 +903,105 @@
 
         // ===== EXPERIMENT FLOW =====
         async function startExperiment() {
-            // Handle demo mode
-            if (window.demoMode) {
-                state.sessionStartTime = Date.now();
-                loadNextTrial();
-                return;
-            }
-
-            // ✅ If a prior session exists (e.g., user refreshed), resume instead of creating a new one
-            if (state.sessionToken) {
-                try {
-                    state.sessionStartTime = Date.now();
-                    await loadNextTrial();  // resume from server state
+                const idInput = document.getElementById('subjectIdInput');
+                const nameInput = document.getElementById('subjectNameInput');
+                
+                // Validate inputs
+                if (!idInput.value.trim()) {
+                    showError('Please enter a Participant ID.');
                     return;
-                } catch (e) {
-                    console.warn('Resume failed, clearing saved session and creating a new one:', e);
-                    try {
-                        localStorage.removeItem(`ap_session_${state.experimentConfig.experiment_id}`);
-                    } catch (_) {}
-                    state.sessionToken = null;
-                    // fall through to normal session creation
-                }
-            }
-
-
-            // Read from editable fields
-            const subjectId = (document.getElementById('subjectIdInput')?.value || '').trim() || null;
-            const subjectName = (document.getElementById('subjectNameInput')?.value || '').trim() || null;
-
-            state.subjectId = subjectId;
-            state.subjectName = subjectName;
-
-
-            // Disable button while we create the session
-            const startBtn = document.querySelector('#screen-instructions .btn-primary');
-            if (startBtn) {
-                startBtn.disabled = true;
-                startBtn.textContent = 'Loading...';
-            }
-
-            try {
-                const payload = {
-                    experiment_id: state.experimentConfig.experiment_id,
-                    browser_info: {
-                        userAgent: navigator.userAgent,
-                        screen: `${screen.width}x${screen.height}`,
-                        language: navigator.language
-                    }
-                };
-
-                if (subjectName) {
-                    payload.subject_metadata = { subject_name: subjectName };
                 }
 
-                if (subjectId) {
-                    payload.subject_id = subjectId;
-                }
+                state.subjectId = idInput.value.trim();
+                state.subjectName = nameInput ? nameInput.value.trim() : '';
 
-                const sessionResponse = await fetch(`${API_BASE}/sessions`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                if (!sessionResponse.ok) throw new Error('Failed to create session');
+                const btn = document.getElementById('startBtn');
+                btn.disabled = true;
+                btn.textContent = 'Starting...';
 
-                const sessionData = await sessionResponse.json();
-                state.sessionToken = sessionData.session_token;
-
-                // ✅ persist session so refresh can resume
                 try {
-                    localStorage.setItem(`ap_session_${state.experimentConfig.experiment_id}`, state.sessionToken);
-                    localStorage.setItem(`ap_subject_${state.experimentConfig.experiment_id}`, JSON.stringify({
-                        subject_id: state.subjectId,
-                        subject_name: state.subjectName
-                    }));
-                } catch (e) {
-                    console.warn('localStorage unavailable:', e);
-                }
+                    // CASE A: Existing Session (Pre-filled from Dashboard or Resumed)
+                    if (state.sessionToken) {
+                        console.log('Resuming existing session:', state.sessionToken);
+                        
+                        // Force update the subject name in case the user edited it manually
+                        try {
+                            await fetch(`${API_BASE}/sessions/${state.sessionToken}/subject`, {
+                                method: 'PUT',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    subject_id: state.subjectId,
+                                    subject_name: state.subjectName
+                                })
+                            });
+                        } catch (err) {
+                            console.warn('Failed to update subject name on resume:', err);
+                        }
 
-                state.sessionStartTime = Date.now();
-                loadNextTrial();
+                        // Proceed to load trials
+                        document.getElementById('landingPage').style.display = 'none';
+                        document.getElementById('experimentContainer').style.display = 'block';
+                        loadNextTrial();
+                        return;
+                    }
 
-            } catch (error) {
-                console.error('Error starting experiment:', error);
-                showError('Failed to start the experiment session. Please refresh.');
-                if (startBtn) {
-                    startBtn.disabled = false;
-                    startBtn.textContent = 'Begin Study';
+                    // CASE B: New Session (Manually started by user)
+                    console.log('Creating new session for:', state.subjectId);
+                    
+                    const response = await fetch(`${API_BASE}/sessions`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            experiment_id: state.experimentConfig.experiment_id,
+                            subject_id: state.subjectId,
+                            // FIX: Send subject_name in metadata so it appears on Dashboard
+                            subject_metadata: { 
+                                subject_name: state.subjectName,
+                                user_agent: navigator.userAgent,
+                                screen_width: window.screen.width,
+                                screen_height: window.screen.height
+                            },
+                            browser_info: {
+                                userAgent: navigator.userAgent,
+                                language: navigator.language,
+                                platform: navigator.platform,
+                                vendor: navigator.vendor
+                            }
+                        })
+                    });
+
+                    if (!response.ok) {
+                        const data = await response.json();
+                        throw new Error(data.error || 'Failed to start session');
+                    }
+
+                    const data = await response.json();
+                    state.sessionToken = data.session_token;
+                    
+                    // Save to local storage for recovery
+                    try {
+                        const expId = state.experimentConfig.experiment_id;
+                        localStorage.setItem(`ap_session_${expId}`, state.sessionToken);
+                        localStorage.setItem(`ap_subject_${expId}`, JSON.stringify({
+                            id: state.subjectId,
+                            name: state.subjectName
+                        }));
+                    } catch(e) { console.warn('Storage error', e); }
+
+                    // UI Transition
+                    document.getElementById('landingPage').style.display = 'none';
+                    document.getElementById('experimentContainer').style.display = 'block';
+                    loadNextTrial();
+
+                } catch (error) {
+                    console.error('Start error:', error);
+                    showError(error.message);
+                    btn.disabled = false;
+                    btn.textContent = 'Begin Study';
                 }
             }
-        }
 
 
         async function loadNextTrial() {
