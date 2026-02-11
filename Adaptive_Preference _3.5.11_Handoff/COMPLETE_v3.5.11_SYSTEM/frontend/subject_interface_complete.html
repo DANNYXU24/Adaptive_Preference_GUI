@@ -699,7 +699,7 @@
 
     <script>
         // ===== STATE MANAGEMENT =====
-        const state = {
+const state = {
             sessionToken: null,
             experimentConfig: null,
             subjectId: null,
@@ -711,9 +711,9 @@
             startTime: null,
             trialStartTime: null,
             choices: [],
-            sessionStartTime: null
+            sessionStartTime: null,
+            timerInterval: null  
         };
-
 
         // ===== API CONFIGURATION =====
         const API_BASE = 'http://127.0.0.1:5000/api';
@@ -1045,6 +1045,8 @@
                     // Update progress
                     updateProgress();
 
+                    startTrialTimer();
+
                     // Show trial screen
                     showScreen('trial');
 
@@ -1183,12 +1185,72 @@
 
         // ===== HELPER FUNCTIONS =====
         function updateProgress() {
-            if (!state.experimentConfig.show_progress) return;
+            // 1. Check if we are in "Timer Mode"
+            const config = state.experimentConfig;
+            // The time_limit is stored inside experiment_metadata
+            const limit = config?.experiment_metadata?.time_limit || 0;
+
+            // If a limit is set, we do NOT show "Trial X of Y". We show the timer instead.
+            if (limit > 0) return; 
+
+            // Otherwise, show standard progress bar
+            if (!config?.show_progress) return;
 
             const percentage = (state.trialsCompleted / state.totalTrials) * 100;
-            document.getElementById('progressBar').style.width = percentage + '%';
-            document.getElementById('progressText').textContent = 
-                `Trial ${state.trialsCompleted + 1} of ${state.totalTrials}`;
+            const bar = document.getElementById('progressBar');
+            if (bar) {
+                bar.style.width = percentage + '%';
+                bar.style.backgroundColor = 'white'; // Standard color
+                bar.style.transition = 'width 0.5s ease';
+            }
+            const txt = document.getElementById('progressText');
+            if (txt) txt.textContent = `Trial ${state.trialsCompleted + 1} of ${state.totalTrials}`;
+        }
+
+        function startTrialTimer() {
+            // 1. Get the limit from metadata
+            const config = state.experimentConfig;
+            const limit = config?.experiment_metadata?.time_limit || 0;
+
+            // 2. Always clear any old timer first
+            if (state.timerInterval) clearInterval(state.timerInterval);
+
+            const bar = document.getElementById('progressBar');
+            const txt = document.getElementById('progressText');
+
+            // 3. If NO limit, ensure bar is white and exit
+            if (!limit || limit <= 0) {
+                if(bar) {
+                    bar.style.backgroundColor = 'white';
+                    bar.style.transition = 'width 0.5s ease';
+                } 
+                return; 
+            }
+
+            // 4. SETUP TIMER VISUALS
+            if (bar) {
+                bar.style.width = '100%';             // Start full
+                bar.style.transition = 'none';        // Remove animation lag for smooth countdown
+                bar.style.backgroundColor = '#fc8181'; // Set to RED to indicate timer
+            }
+            if (txt) txt.textContent = `Time Remaining`;
+
+            // 5. START COUNTDOWN
+            const startTime = Date.now();
+            const duration = limit * 1000; // Convert seconds to ms
+
+            state.timerInterval = setInterval(() => {
+                const elapsed = Date.now() - startTime;
+                const remaining = Math.max(0, duration - elapsed);
+                const pct = (remaining / duration) * 100;
+                
+                if (bar) bar.style.width = pct + '%';
+                
+                if (remaining <= 0) {
+                    clearInterval(state.timerInterval);
+                    // Timer finished - No action per your instructions
+                }
+            }, 33); // Update ~30 times per second
         }
 
         function showScreen(screenName) {
@@ -1435,6 +1497,9 @@
         // Override confirmChoice to use resilient networking (with pair_token)
         const originalConfirmChoice = window.confirmChoice;
         window.confirmChoice = async function() {
+            // 1. STOP THE TIMER IMMEDIATELY
+            if (state.timerInterval) clearInterval(state.timerInterval);
+
             if (!state.selectedChoice) return;
 
             // Demo mode: delegate to original simple handler
