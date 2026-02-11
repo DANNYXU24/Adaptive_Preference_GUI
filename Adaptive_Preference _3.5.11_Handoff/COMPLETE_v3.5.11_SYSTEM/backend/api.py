@@ -37,7 +37,9 @@ except ImportError:
         get_experiment_paths, init_settings_db, init_participant_results_db,
         lookup_result_db_for_session, insert_session_index, mark_session_complete, slugify
     )
-
+    # In api.py, replace the "try...except" block for auth with this:
+    from auth import require_auth, require_roles, auth_bp
+    from bayesian_adaptive import BayesianPreferenceState
 
 # Import auth functions - consolidated import
 try:
@@ -1355,6 +1357,7 @@ def dev_issue_token():
         email = f"{sub}@example.com"
         user = User.query.filter_by(email=email).first()
         
+        # 1. Create user only if they don't exist
         if not user:
             user = User(
                 email=email, 
@@ -1366,20 +1369,30 @@ def dev_issue_token():
             user.set_password("dev-password")
             db.session.add(user)
             db.session.commit()
+            # NOTE: Token generation removed from here
         
-            token = jwt_encode({'sub': sub, 'role': role, 'user_id': str(user.user_id)}, exp_seconds=3600*8)
+        # 2. GENERATE TOKEN HERE (OUTSIDE THE IF BLOCK)
+        # This ensures it runs for both NEW and EXISTING users
+        payload = {
+            'sub': sub, 
+            'role': role, 
+            'user_id': str(user.user_id)  # <--- Ensures user_id is always in token
+        }
+        
+        # Make sure jwt_encode is imported from auth!
+        token = jwt_encode(payload, exp_seconds=3600*8)
 
-        
-        # CRITICAL FIX: The str() below prevents the 500 Crash
         return jsonify({
             'token': token, 
             'role': role, 
             'user_id': str(user.user_id) 
         })
+
     except Exception as e:
         db.session.rollback()
-        print(f"DEV LOGIN ERROR: {e}") # This prints to your terminal
+        print(f"DEV LOGIN ERROR: {e}") 
         return jsonify({'error': str(e)}), 500
+    
 def _resolve_experiment_for_session(session_token: str):
     """
     Resolve (experiment, storage, result_db_path) for a session_token.
@@ -1521,8 +1534,9 @@ def create_experiment():
             instructions=data.get('instructions'),
             completion_message=data.get('completion_message'),
             status=data.get('status', 'draft'),
-            experiment_metadata=data.get('experiment_metadata', {}) or {}
-        )
+            experiment_metadata={
+                **(data.get('experiment_metadata', {}) or {}), 
+                'time_limit': int(data.get('time_limit', 0))})
 
         db.session.add(exp)
         db.session.commit()

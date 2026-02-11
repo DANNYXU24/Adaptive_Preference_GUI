@@ -1,3 +1,4 @@
+# backend/auth.py
 from functools import wraps
 from flask import Blueprint, request, jsonify
 import os, time, json, base64, hmac, hashlib
@@ -9,6 +10,7 @@ auth_bp = Blueprint('auth', __name__)
 ALG = 'HS256'
 
 def _get_secret() -> bytes:
+    # Gets secret from environment or uses default for dev
     s = os.environ.get('ADAPTIVE_PREF_JWT_SECRET', 'dev-secret')
     return s.encode('utf-8')
 
@@ -26,6 +28,7 @@ def jwt_encode(payload: dict, exp_seconds: int = 3600) -> str:
     header = {'alg': ALG, 'typ': 'JWT'}
     payload = dict(payload)
     payload.setdefault('iat', int(time.time()))
+    # Overwrite exp to ensure it matches our seconds logic
     payload['exp'] = int(time.time()) + exp_seconds
     
     header_b64 = _b64url(json.dumps(header, separators=(',',':')).encode())
@@ -102,24 +105,25 @@ def jwt_decode_pair_token(token: str) -> dict:
         raise ValueError('wrong token kind')
     return payload
 
-# --- Routes ---
+# --- ROUTES ---
 
 @auth_bp.route('/dev_issue_token', methods=['POST'])
 def dev_issue_token():
-    """
-    Generates a development token using custom jwt_encode.
-    """
     try:
         data = request.get_json() or {}
         role = data.get('role', 'researcher')
         sub = data.get('sub', 'dev-user')
-
-        # Use custom encoding function; 86400 seconds = 1 day
-        payload = {'sub': sub, 'role': role}
+        
+        # FIX: Add 'user_id' to the payload so the rest of the app doesn't crash
+        payload = {
+            'sub': sub, 
+            'role': role, 
+            'user_id': 'dev-admin-id'  # <--- THIS WAS MISSING
+        }
+        
+        # Use the local function (jwt_encode)
         token = jwt_encode(payload, exp_seconds=86400)
-
+        
         return jsonify({'token': token})
-
     except Exception as e:
-        print(f"Dev Login Error: {e}")
         return jsonify({'error': str(e)}), 500

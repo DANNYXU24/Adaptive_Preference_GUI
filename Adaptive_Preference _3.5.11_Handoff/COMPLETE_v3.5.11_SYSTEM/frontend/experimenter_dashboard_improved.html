@@ -1473,6 +1473,14 @@
                         <input type="number" id="breakInterval" min="0" max="50" value="20" oninput="validateForm()">
                         <div class="input-help">Set to 0 for no breaks. Recommended: 15-25 trials</div>
                     </div>
+
+                    <div class="form-group">
+                            <div class="label-with-icon">
+                                <label for="timeLimit">Time Limit per Trial (seconds)</label>
+                            </div>
+                            <div class="help-text">Set to 0 for no time limit.</div>
+                            <input type="number" id="timeLimit" min="0" step="1" placeholder="e.g. 10">
+                        </div>
                     
                     <div class="stats-grid">
                         <div class="stat-card">
@@ -2379,6 +2387,7 @@
                 show_progress: document.getElementById('showProgress').checked,
                 enable_counterbalancing: document.getElementById('counterbalance').checked,
                 break_interval: parseInt(document.getElementById('breakInterval').value),
+                time_limit: parseInt(document.getElementById('timeLimit').value) || 0,
                 instructions: document.getElementById('instructions').value,
                 completion_message: document.getElementById('completionMessage').value,
                 epsilon: 0.01,
