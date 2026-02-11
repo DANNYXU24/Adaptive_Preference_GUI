@@ -670,30 +670,8 @@
             <div class="completion-screen">
                 <div class="completion-icon">🎉</div>
                 <h2>Thank You!</h2>
-                <p id="completionMessage">
-                    Thank you for participating! Your responses have been recorded successfully.
-                </p>
-                
-                <div class="stats-display">
-                    <div class="stat-item">
-                        <span class="stat-value" id="finalTrialsCompleted">-</span>
-                        <span class="stat-label">Total Trials</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-value" id="finalTotalTime">-</span>
-                        <span class="stat-label">Total Time</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-value" id="finalAvgTime">-</span>
-                        <span class="stat-label">Avg. Response Time</span>
-                    </div>
+                <p id="completionMessage">Session Complete.</p>
                 </div>
-
-                <div class="completion-code" id="completionCodeBox" style="display: none;">
-                    <div class="completion-code-label">Your completion code:</div>
-                    <div class="completion-code-value" id="completionCode">-</div>
-                </div>
-            </div>
         </div>
     </div>
 
@@ -1158,28 +1136,16 @@ const state = {
         }
 
         function showCompletion() {
-            // Calculate stats
-            const totalTime = Math.round((Date.now() - state.sessionStartTime) / 1000 / 60);
-            const avgTime = state.choices.length > 0 ? 
-                Math.round(state.choices.reduce((sum, c) => sum + c.responseTime, 0) / state.choices.length / 1000) : 0;
-
-            // Update completion screen
-            document.getElementById('finalTrialsCompleted').textContent = state.trialsCompleted;
-            document.getElementById('finalTotalTime').textContent = `${totalTime} min`;
-            document.getElementById('finalAvgTime').textContent = `${avgTime} sec`;
-
-            if (state.experimentConfig.completion_message) {
-                document.getElementById('completionMessage').textContent = 
-                    state.experimentConfig.completion_message;
+            // Calculate stats just for console/debugging if needed, 
+            // but don't try to update the removed HTML elements.
+            
+            // 1. Update the custom message if provided
+            if (state.experimentConfig?.completion_message) {
+                const msgEl = document.getElementById('completionMessage');
+                if(msgEl) msgEl.textContent = state.experimentConfig.completion_message;
             }
 
-            // Generate completion code (if needed for course credit, etc.)
-            const completionCode = generateCompletionCode();
-            if (completionCode) {
-                document.getElementById('completionCode').textContent = completionCode;
-                document.getElementById('completionCodeBox').style.display = 'block';
-            }
-
+            // 2. Show the screen
             showScreen('completion');
         }
 
