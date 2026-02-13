@@ -1199,7 +1199,7 @@ const state = {
                 bar.style.transition = 'none';        // Remove animation lag for smooth countdown
                 bar.style.backgroundColor = '#fc8181'; // Set to RED to indicate timer
             }
-            if (txt) txt.textContent = `Time Remaining`;
+            if (txt) txt.textContent = `Trial ${state.trialsCompleted + 1} of ${state.totalTrials}`;
 
             // 5. START COUNTDOWN
             const startTime = Date.now();
