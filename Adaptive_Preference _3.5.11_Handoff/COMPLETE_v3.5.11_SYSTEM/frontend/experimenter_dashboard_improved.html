@@ -293,7 +293,7 @@
         /* ===== CONTENT AREA ===== */
         .content {
             padding: 40px;
-            min-height: 600px;
+            
         }
 
         /* ===== EXAMPLE TEMPLATES ===== */
@@ -1306,55 +1306,6 @@
                     <p style="text-align: center; color: var(--gray-700); margin-bottom: 30px;">
                         Select a template to get started quickly, or create from scratch
                     </p>
-                    
-                    <div class="example-grid">
-                        <div class="example-card" onclick="loadTemplate('food')">
-                            <div class="example-icon">🍕</div>
-                            <h3>Food Preference</h3>
-                            <p>Compare preferences for different food items</p>
-                            <ul class="example-specs">
-                                <li>15 stimuli</li>
-                                <li>40 trials</li>
-                                <li>~10 min session</li>
-                            </ul>
-                            <button>Use This Template</button>
-                        </div>
-                        
-                        <div class="example-card" onclick="loadTemplate('faces')">
-                            <div class="example-icon">👤</div>
-                            <h3>Face Attractiveness</h3>
-                            <p>Test symmetric vs asymmetric face preferences</p>
-                            <ul class="example-specs">
-                                <li>20 stimuli</li>
-                                <li>50 trials</li>
-                                <li>~12 min session</li>
-                            </ul>
-                            <button>Use This Template</button>
-                        </div>
-                        
-                        <div class="example-card" onclick="loadTemplate('products')">
-                            <div class="example-icon">🛍️</div>
-                            <h3>Product Preferences</h3>
-                            <p>Test consumer preferences for products</p>
-                            <ul class="example-specs">
-                                <li>12 stimuli</li>
-                                <li>35 trials</li>
-                                <li>~8 min session</li>
-                            </ul>
-                            <button>Use This Template</button>
-                        </div>
-                        
-                        <div class="example-card" onclick="loadTemplate('colors')">
-                            <div class="example-icon">🎨</div>
-                            <h3>Color Preferences</h3>
-                            <p>Rank ordering of color preferences</p>
-                            <ul class="example-specs">
-                                <li>10 stimuli</li>
-                                <li>30 trials</li>
-                                <li>~7 min session</li>
-                            </ul>
-                            <button>Use This Template</button>
-                        </div>
                         
                         <div class="example-card blank" onclick="loadTemplate('scratch')">
                             <div class="plus-icon">+</div>
@@ -1473,6 +1424,22 @@
                         <input type="number" id="breakInterval" min="0" max="50" value="20" oninput="validateForm()">
                         <div class="input-help">Set to 0 for no breaks. Recommended: 15-25 trials</div>
                     </div>
+
+                    <div class="form-group">
+                            <div class="label-with-icon">
+                                <label for="breakTimeLimit">Break Duration (seconds)</label>
+                            </div>
+                            <div class="help-text">Wait time before the 'Continue' button appears. Set 0 for immediate button.</div>
+                            <input type="number" id="breakTimeLimit" min="0" step="1" placeholder="e.g. 30">
+                        </div>
+
+                    <div class="form-group">
+                            <div class="label-with-icon">
+                                <label for="timeLimit">Time Limit per Trial (seconds)</label>
+                            </div>
+                            <div class="help-text">Set to 0 for no time limit.</div>
+                            <input type="number" id="timeLimit" min="0" step="1" placeholder="e.g. 10">
+                        </div>
                     
                     <div class="stats-grid">
                         <div class="stat-card">
@@ -2379,6 +2346,8 @@
                 show_progress: document.getElementById('showProgress').checked,
                 enable_counterbalancing: document.getElementById('counterbalance').checked,
                 break_interval: parseInt(document.getElementById('breakInterval').value),
+                time_limit: parseInt(document.getElementById('timeLimit').value) || 0,
+                break_time_limit: parseInt(document.getElementById('breakTimeLimit').value) || 0,
                 instructions: document.getElementById('instructions').value,
                 completion_message: document.getElementById('completionMessage').value,
                 epsilon: 0.01,

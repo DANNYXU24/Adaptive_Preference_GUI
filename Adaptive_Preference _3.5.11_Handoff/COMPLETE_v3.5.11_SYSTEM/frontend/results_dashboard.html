@@ -235,9 +235,6 @@
         <p id="expStatus"></p>
       </div>
       <div style="text-align:right; min-width:300px;">
-        <button id="btnStartNew" class="btn btn-sm btn-new-session" style="display:none;" onclick="startNewSession()">+ New Subject Session</button>
-        
-        <button id="downloadRawBtn" class="btn btn-sm" style="display:none;">Download Raw CSV</button>
         <button id="downloadCleanBtn" class="btn btn-sm btn-secondary" style="display:none;">Download Cleaned CSV</button>
       </div>
     </div>
@@ -262,8 +259,13 @@
 
     <div class="card">
       <div class="section-title">
-        <h2 style="font-size:18px; margin:0;">Sessions</h2>
+        <div style="display: flex; align-items: center; justify-content: space-between; width: 100%; margin-top: 30px; margin-bottom: 10px;">
+          <h2 style="margin: 0;">Sessions</h2>
+          <button class="btn btn-secondary" onclick="window.location.reload()" style="padding: 6px 12px; font-size: 13px;">
+              ↻ Refresh Page
+          </button>
       </div>
+          </div>
 
       <div class="filters">
         <label>
@@ -387,32 +389,34 @@
     }
 
     async function saveNewSubject() {
-        const name = document.getElementById('newSubjectName').value.trim();
-        const pid = document.getElementById('newSubjectId').value.trim();
-        if (!name || !pid) return alert('Please enter both Name and Participant ID');
+          const name = document.getElementById('newSubjectName').value;
+          const pid = document.getElementById('newSubjectId').value;
+          
+          // 1. Basic Validation
+          if(!name || !pid) return alert('Name and ID required');
+          
+          // 2. Check for Duplicates
+          // We look through the existing sessions loaded in memory
+          const sessions = state.rawData.sessions || [];
+          const duplicate = sessions.find(s => s.subject_id === pid);
+          
+          if (duplicate) {
+              alert(`Error: Participant ID "${pid}" is already taken by ${duplicate.subject_name || 'another subject'}.\n\nPlease choose a different ID.`);
+              return; // Stop here, do not send to server
+          }
 
-        const params = new URLSearchParams(window.location.search);
-        const expId = params.get('exp');
-        
-        try {
-            // Create the session immediately (status will be active but 0 trials -> 'Not Started')
-            const resp = await fetch(`${API_BASE}/sessions`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', ...authHeader() },
-                body: JSON.stringify({
-                    experiment_id: expId,
-                    subject_id: pid,
-                    subject_metadata: { subject_name: name }
-                })
-            });
-            if (!resp.ok) throw new Error('Failed to create session');
-            
-            document.getElementById('addSubjectDialog').close();
-            loadResults(); // Refresh table to show the new row
-        } catch(e) {
-            alert(e.message);
-        }
-    }
+          // 3. Proceed if unique
+          try {
+              const expId = state.rawData.experiment.experiment_id;
+              await fetch(`${API_BASE}/sessions`, {
+                  method:'POST',
+                  headers:{'Content-Type':'application/json', ...authHeader()},
+                  body:JSON.stringify({ experiment_id:expId, subject_id:pid, subject_metadata:{subject_name:name} })
+              });
+              document.getElementById('addSubjectDialog').close();
+              loadResults();
+          } catch(e) { alert(e.message); }
+      }
 
     function renderMetrics(summary) {
       document.getElementById('m_total_sessions').innerText = summary.total_sessions ?? '-';
@@ -523,10 +527,10 @@ function renderSessionsTable() {
         if (!pid) {
           tdExport.innerHTML = '<span class="muted">—</span>';
         } else {
-          const rawBtn = document.createElement('button');
-          rawBtn.className = 'btn btn-secondary btn-sm';
-          rawBtn.textContent = 'Raw';
-          rawBtn.onclick = () => exportParticipantCsv(pid, 'raw');
+         // const rawBtn = document.createElement('button');
+         // rawBtn.className = 'btn btn-secondary btn-sm';
+          //rawBtn.textContent = 'Raw';
+         // rawBtn.onclick = () => exportParticipantCsv(pid, 'raw');
 
           const cleanBtn = document.createElement('button');
           cleanBtn.className = 'btn btn-secondary btn-sm';
@@ -534,7 +538,7 @@ function renderSessionsTable() {
           cleanBtn.textContent = 'Clean';
           cleanBtn.onclick = () => exportParticipantCsv(pid, 'clean');
 
-          tdExport.appendChild(rawBtn);
+         // tdExport.appendChild(rawBtn);
           tdExport.appendChild(cleanBtn);
         }
 
