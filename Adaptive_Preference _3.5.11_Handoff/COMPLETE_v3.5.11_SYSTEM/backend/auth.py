@@ -105,25 +105,3 @@ def jwt_decode_pair_token(token: str) -> dict:
         raise ValueError('wrong token kind')
     return payload
 
-# --- ROUTES ---
-
-@auth_bp.route('/dev_issue_token', methods=['POST'])
-def dev_issue_token():
-    try:
-        data = request.get_json() or {}
-        role = data.get('role', 'researcher')
-        sub = data.get('sub', 'dev-user')
-        
-        # FIX: Add 'user_id' to the payload so the rest of the app doesn't crash
-        payload = {
-            'sub': sub, 
-            'role': role, 
-            'user_id': 'dev-admin-id'  # <--- THIS WAS MISSING
-        }
-        
-        # Use the local function (jwt_encode)
-        token = jwt_encode(payload, exp_seconds=86400)
-        
-        return jsonify({'token': token})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500

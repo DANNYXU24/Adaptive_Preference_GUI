@@ -39,7 +39,6 @@ except ImportError:
     )
     # In api.py, replace the "try...except" block for auth with this:
     from auth import require_auth, require_roles, auth_bp
-    from bayesian_adaptive import BayesianPreferenceState
 
 # Import auth functions - consolidated import
 try:
@@ -132,54 +131,27 @@ def _exp_paths(experiment: 'Experiment') -> dict:
     """
     Compute experiment folder/db paths and ensure settings DB exists.
     IMPORTANT: This must be idempotent.
-    If metadata already contains exp_storage and the folder/db exist, reuse it.
     """
     meta = experiment.experiment_metadata or {}
     storage = meta.get("exp_storage") or {}
 
-    # If we already created storage before, REUSE it (do not create a new folder)
     exp_dir = storage.get("exp_dir")
     settings_db = storage.get("settings_db")
-    stimuli_dir = storage.get("stimuli_dir")
-    participants_dir = storage.get("participants_dir")
 
-    # If we already created storage before, REUSE it (but verify it belongs to this experiment).
-    if exp_dir and settings_db and os.path.exists(exp_dir) and os.path.exists(settings_db):
-        # Guard against shared/incorrect metadata pointing at another experiment's folder.
-        # (This can happen if JSON defaults were mutable, or if a folder was copied manually.)
-        marker = os.path.join(exp_dir, ".experiment_id")
-        try:
-            if os.path.exists(marker):
-                existing_id = open(marker, "r", encoding="utf-8").read().strip()
-                if existing_id and existing_id != str(experiment.experiment_id):
-                    # Treat as missing so we create fresh paths below.
-                    exp_dir = None
-        except Exception:
-            exp_dir = None
-
-# If metadata has paths, checks if they actually exist on disk
     if exp_dir and settings_db:
         if os.path.exists(exp_dir) and os.path.exists(settings_db):
-            # Guard against shared/incorrect metadata pointing at another experiment's folder.
             marker = os.path.join(exp_dir, ".experiment_id")
             try:
                 if os.path.exists(marker):
                     existing_id = open(marker, "r", encoding="utf-8").read().strip()
                     if existing_id and existing_id != str(experiment.experiment_id):
-                        # Pointing to wrong folder? Treat as missing.
                         exp_dir = None
-                return storage 
+                    else:
+                        return storage
             except Exception:
                 pass
         else:
-            # Metadata exists, but FOLDER IS GONE. 
-            # DO NOT RECREATE IT. This means the user deleted it.
-            # Returning None or raising error prevents ghost folders.
             raise FileNotFoundError(f"Experiment folder deleted: {exp_dir}")
-
-    # Only reach here if this is a BRAND NEW experiment (no metadata at all)
-    exp_name = experiment.name or "experiment"
-
 
     # Otherwise create fresh paths
     exp_name = experiment.name or "experiment"
@@ -194,11 +166,16 @@ def _exp_paths(experiment: 'Experiment') -> dict:
         "exp_slug": paths["exp_slug"],
     }
 
-    experiment.experiment_metadata = meta
+# Force SQLAlchemy to recognize the JSON update
+    from sqlalchemy.orm.attributes import flag_modified
+    experiment.experiment_metadata = dict(meta)
+    flag_modified(experiment, "experiment_metadata")
+    
     db.session.add(experiment)
     db.session.commit()
 
     return meta["exp_storage"]
+
 
 def _find_exp_dir_by_marker(experiment_id: str) -> str | None:
     """
@@ -206,7 +183,8 @@ def _find_exp_dir_by_marker(experiment_id: str) -> str | None:
     IMPORTANT: This must NOT create any folders.
     """
     try:
-        data_root = get_data_root(DATA_BASE_DIR)
+        # FIX: Directly compute the path instead of relying on a missing function
+        data_root = os.path.abspath(os.path.join(DATA_BASE_DIR, '..', 'experiments_data'))
         target = str(experiment_id)
 
         for root, dirs, files in os.walk(data_root):
@@ -276,6 +254,19 @@ def _stimulus_row_to_dict(row: dict) -> dict:
         "url": f"/uploads/{os.path.basename(row.get('file_path') or '')}"
     }
 
+def build_stimuli_features(stimuli_list):
+    """
+    Convert stimuli metadata into a numeric feature matrix X.
+    Using an identity matrix (one-hot encoding) so the GP treats 
+    each anomaly as a distinct, independent discrete item.
+    """
+    n_items = len(stimuli_list)
+    
+    # np.eye creates a perfect diagonal matrix where each item 
+    # gets a '1' in its own unique column, and '0' everywhere else.
+    X = np.eye(n_items, dtype=np.float64)
+    
+    return X
 
 def _participant_result_db_path(experiment: 'Experiment', subject_id: str, session_token: str) -> str:
     meta = experiment.experiment_metadata or {}
@@ -491,9 +482,30 @@ def _resolve_experiment_for_session(session_token: str):
     def validate_storage(exp):
         meta = exp.experiment_metadata or {}
         store = meta.get("exp_storage")
-        if not store: 
+        
+        # --- Auto-heal missing JSON metadata ---
+        if not store:
+            exp_slug = slugify(exp.name or "experiment")
+            data_root = os.path.abspath(os.path.join(DATA_BASE_DIR, '..', 'experiments_data'))
+            exp_dir = os.path.join(data_root, exp_slug)
+            marker = os.path.join(exp_dir, ".experiment_id")
+            try:
+                if not os.path.exists(marker) or open(marker).read().strip() != str(exp.experiment_id):
+                    exp_dir = os.path.join(data_root, f"{exp_slug}_{str(exp.experiment_id)[:8]}")
+            except Exception:
+                exp_dir = os.path.join(data_root, f"{exp_slug}_{str(exp.experiment_id)[:8]}")
+                
+            settings_db = os.path.join(exp_dir, f"{exp_slug}_Setting.db")
+            if os.path.exists(settings_db):
+                return {
+                    "exp_dir": exp_dir,
+                    "settings_db": settings_db,
+                    "stimuli_dir": os.path.join(exp_dir, "stimuli"),
+                    "participants_dir": os.path.join(exp_dir, "participants"),
+                    "exp_slug": exp_slug,
+                }
             return None
-        # If the DB file is missing, consider the experiment "broken/deleted"
+
         if not os.path.exists(store.get("settings_db", "")):
             return None
         return store
@@ -1277,7 +1289,7 @@ def update_experiment(experiment_id):
     meta = exp.experiment_metadata or {}
     new_meta = data.get('experiment_metadata') or {}
     meta.update(new_meta)
-    exp.experiment_metadata = meta
+    exp.experiment_metadata = dict(meta)
 
     db.session.commit()
     return jsonify({'experiment': exp.to_dict()})
@@ -1632,15 +1644,14 @@ def update_session_subject(session_token):
 @app.route('/api/sessions/<session_token>/next', methods=['GET'])
 @limiter.limit(NEXT_RATE)
 def get_next_pair(session_token):
-    """Get next stimulus pair for session using Bayesian algorithm (state stored in participant DB)."""
+    """Get next stimulus pair using GPro (evaluating features against choice history)."""
     try:
         # Parse experiment_id from token
         experiment, storage, result_db_path = _resolve_experiment_for_session(session_token)
         if not experiment or not storage or not result_db_path:
             return jsonify({'error': 'Session not found'}), 404
 
-
-        # Load session + state
+        # Load session + fetch choices for the M matrix
         con = _connect_sqlite(result_db_path)
         try:
             sess = con.execute("SELECT * FROM sessions WHERE session_token = ?", (session_token,)).fetchone()
@@ -1664,9 +1675,11 @@ def get_next_pair(session_token):
                 mark_session_complete(storage["settings_db"], session_token, completed_at)
                 return jsonify({'complete': True})
 
-            algo = con.execute("SELECT * FROM algorithm_state WHERE session_token = ?", (session_token,)).fetchone()
-            if not algo:
-                return jsonify({'error': 'Algorithm state not found'}), 500
+            # Fetch the choice history
+            choices = con.execute(
+                "SELECT stimulus_a_id, stimulus_b_id, chosen_stimulus_id FROM choices WHERE session_token = ?", 
+                (session_token,)
+            ).fetchall()
         finally:
             con.close()
 
@@ -1678,33 +1691,60 @@ def get_next_pair(session_token):
         stimuli_list = [_stimulus_row_to_dict(r) for r in stim_rows]
         n_items = len(stimuli_list)
 
-        # DEBUG: Write errors to a text file since there is no terminal
-        try:
-            from backend.bayesian_adaptive import BayesianPreferenceState, PureBayesianAdaptiveSelector
-        except ImportError:
-            try:
-                from bayesian_adaptive import BayesianPreferenceState, PureBayesianAdaptiveSelector
-            except Exception as e:
-                # WRITE THE ERROR TO A FILE
-                import traceback
-                with open("error_log.txt", "w") as f:
-                    f.write("--- CRASH REPORT ---\n")
-                    f.write(f"Error: {str(e)}\n")
-                    f.write(traceback.format_exc())
-                
-                # Still crash so the UI knows something is wrong
-                return jsonify({'error': str(e)}), 500
-        bayesian_state = BayesianPreferenceState(n_items)
-        bayesian_state.mu = deserialize_numpy(algo["mu"], (n_items,))
-        bayesian_state.Sigma = deserialize_numpy(algo["sigma"], (n_items, n_items))
-        bayesian_state.comparison_matrix = deserialize_numpy(algo["comparison_matrix"], (n_items, n_items))
+        # 1. Map stimuli to indices and build feature matrix X
+        id_to_idx = {str(s['stimulus_id']): idx for idx, s in enumerate(stimuli_list)}
+        X = build_stimuli_features(stimuli_list)
 
-        selector = PureBayesianAdaptiveSelector(
-            epsilon=float(experiment.epsilon),
-            exploration_weight=float(experiment.exploration_weight)
-        )
+        # 2. Build the M matrix
+        M = []
+        for c in choices:
+            winner_id = str(c['chosen_stimulus_id'])
+            loser_id = str(c['stimulus_a_id']) if winner_id == str(c['stimulus_b_id']) else str(c['stimulus_b_id'])
+            
+            if winner_id in id_to_idx and loser_id in id_to_idx:
+                M.append([id_to_idx[winner_id], id_to_idx[loser_id]])
+        
+        M = np.array(M, dtype=np.int32)
 
-        i, j = selector.select_next_pair(bayesian_state)
+        # 3. Select next pair
+        if len(M) == 0:
+            # First trial: pick a random pair
+            i, j = np.random.choice(n_items, 2, replace=False)
+        else:
+            from GPro.preference import ProbitPreferenceGP
+            from scipy.stats import norm
+            
+            # Fit the GPro model
+            gpr = ProbitPreferenceGP()
+            gpr.fit(X, M)
+            
+            # Predict utility and covariance for all items in the library
+            y_mean, y_cov = gpr.predict(X, return_y_cov=True)
+            
+            max_gain = -np.inf
+            best_pair = (0, 1)
+            
+            # Active Learning: Select the pair with the highest expected information gain
+            for i in range(n_items):
+                for j in range(i + 1, n_items):
+                    mu_diff = y_mean[i] - y_mean[j]
+                    
+                    # Compute variance difference adding epsilon noise
+                    sigma_diff_sq = y_cov[i, i] + y_cov[j, j] - 2 * y_cov[i, j] + (float(experiment.epsilon) ** 2)
+                    sigma_diff = np.sqrt(max(sigma_diff_sq, 1e-9))
+                    
+                    p_i_over_j = norm.cdf(mu_diff / sigma_diff)
+                    
+                    # Information gain entropy formulation
+                    gain = -p_i_over_j * np.log2(p_i_over_j + 1e-10)
+                    gain += -(1 - p_i_over_j) * np.log2(1 - p_i_over_j + 1e-10)
+                    gain *= sigma_diff  # Weight by uncertainty
+                    
+                    if gain > max_gain:
+                        max_gain = gain
+                        best_pair = (i, j)
+            
+            i, j = best_pair
 
         pair = [stimuli_list[i], stimuli_list[j]]
 
@@ -1715,7 +1755,7 @@ def get_next_pair(session_token):
 
         # Issue pair token (JWT)
         pair_token = jwt_issue_pair_token({
-            'session_id': session_token,    # <--- ADD THIS LINE
+            'session_id': session_token,
             'session_token': session_token,
             'trial_number': current_trial + 1,
             'stimulus_a_id': str(pair[0]['stimulus_id']),
@@ -1751,18 +1791,16 @@ def get_next_pair(session_token):
         return jsonify({'error': str(e)}), 500
 
 
-
 @app.route('/api/sessions/<session_token>/choice', methods=['POST'])
 @limiter.limit(CHOICE_RATE)
 def record_choice(session_token):
-    """Record subject's choice and update Bayesian beliefs (writes to participant DB)."""
+    """Record subject's choice (GPro calculates state dynamically from this log)."""
     try:
         data = request.get_json() or {}
 
         experiment, storage, result_db_path = _resolve_experiment_for_session(session_token)
         if not experiment or not storage or not result_db_path:
             return jsonify({'error': 'Session not found'}), 404
-
 
         # Validate pair token
         pair_token = data.get('pair_token')
@@ -1781,21 +1819,7 @@ def record_choice(session_token):
             if field not in data:
                 return jsonify({'error': f'Missing field: {field}'}), 400
 
-        # Load stimuli list (sorted) to map ids -> indices
-        stim_rows = _list_stimuli_from_settings(storage["settings_db"])
-        if len(stim_rows) < 2:
-            return jsonify({'error': 'Not enough stimuli'}), 400
-        stimuli_list = [_stimulus_row_to_dict(r) for r in stim_rows]
-
-        id_to_idx = {str(s['stimulus_id']): i for i, s in enumerate(stimuli_list)}
-        stimulus_a_idx = id_to_idx.get(str(data['stimulus_a_id']))
-        stimulus_b_idx = id_to_idx.get(str(data['stimulus_b_id']))
-        winner_idx = id_to_idx.get(str(data['chosen_stimulus_id']))
-
-        if stimulus_a_idx is None or stimulus_b_idx is None or winner_idx is None:
-            return jsonify({'error': 'Invalid stimulus IDs'}), 400
-
-        # Load session + algo state
+        # Load session to check expected trial
         con = _connect_sqlite(result_db_path)
         try:
             sess = con.execute("SELECT * FROM sessions WHERE session_token = ?", (session_token,)).fetchone()
@@ -1807,63 +1831,9 @@ def record_choice(session_token):
             if int(pt.get('trial_number') or 0) != expected_trial:
                 return jsonify({'error': 'pair_token/session mismatch'}), 400
 
-            algo = con.execute("SELECT * FROM algorithm_state WHERE session_token = ?", (session_token,)).fetchone()
-            if not algo:
-                return jsonify({'error': 'Algorithm state not found'}), 500
-
-            # Try importing from backend folder, otherwise try local folder
-            try:
-                from backend.bayesian_adaptive import BayesianPreferenceState, PureBayesianAdaptiveSelector
-            except ImportError:
-                try:
-                    from bayesian_adaptive import BayesianPreferenceState, PureBayesianAdaptiveSelector
-                except ImportError:
-                    # Last resort: try adding current directory to path
-                    import sys
-                    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-                    from backend.bayesian_adaptive import BayesianPreferenceState, PureBayesianAdaptiveSelector
-
-            n_items = len(stimuli_list)
-            bayesian_state = BayesianPreferenceState(n_items)
-            bayesian_state.mu = deserialize_numpy(algo["mu"], (n_items,))
-            bayesian_state.Sigma = deserialize_numpy(algo["sigma"], (n_items, n_items))
-            bayesian_state.comparison_matrix = deserialize_numpy(algo["comparison_matrix"], (n_items, n_items))
-
-            selector = PureBayesianAdaptiveSelector(
-                epsilon=float(experiment.epsilon),
-                exploration_weight=float(experiment.exploration_weight)
-            )
-
-            bayesian_state = selector.update_beliefs(
-                bayesian_state,
-                stimulus_a_idx,
-                stimulus_b_idx,
-                winner_idx
-            )
-
-            # Save updated state
-            new_trials_completed = int(algo["trials_completed"] or 0) + 1
             updated_at = datetime.utcnow().isoformat()
-            checksum = hashlib.sha256(bayesian_state.mu.tobytes() + bayesian_state.Sigma.tobytes()).hexdigest()
 
-            con.execute(
-                """
-                UPDATE algorithm_state
-                   SET mu=?, sigma=?, comparison_matrix=?, trials_completed=?, state_checksum=?, updated_at=?
-                 WHERE session_token=?
-                """,
-                (
-                    serialize_numpy(bayesian_state.mu),
-                    serialize_numpy(bayesian_state.Sigma),
-                    serialize_numpy(bayesian_state.comparison_matrix),
-                    new_trials_completed,
-                    checksum,
-                    updated_at,
-                    session_token
-                )
-            )
-
-            # Insert choice row
+            # 1. Insert the choice row
             con.execute(
                 """
                 INSERT INTO choices(
@@ -1883,17 +1853,15 @@ def record_choice(session_token):
                 )
             )
 
-            # Update session counters
+            # 2. Update session counters and check for completion
             trials_total = int(sess["trials_total"] or 0)
             trials_completed = int(sess["trials_completed"] or 0) + 1
             new_status = "active"
             completed_at = None
 
-            # Completion conditions
-            if selector.check_convergence(bayesian_state, float(experiment.convergence_threshold)):
-                new_status = "complete"
-                completed_at = updated_at
-            elif trials_completed >= trials_total:
+            # Note: GPro handles convergence mathematically in the /next endpoint.
+            # For this endpoint, we just terminate if max trials are reached.
+            if trials_completed >= trials_total:
                 new_status = "complete"
                 completed_at = updated_at
 

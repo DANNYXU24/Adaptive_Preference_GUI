@@ -8,6 +8,7 @@ sqlalchemy
 werkzeug
 numpy
 scipy
+pandas
 alembic
 psycopg2
 gunicorn
