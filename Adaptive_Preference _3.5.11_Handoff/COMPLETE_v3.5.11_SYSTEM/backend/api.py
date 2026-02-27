@@ -764,7 +764,73 @@ def auto_tag_stimulus(stimulus_id):
         logger.error(f"Error auto-tagging stimulus: {e}")
         return jsonify({'error': 'Failed to auto-tag stimulus'}), 500
 
+@app.route('/api/experiments/<experiment_id>/stimuli/bulk_features', methods=['POST'])
+@require_auth
+@require_roles(['admin', 'researcher'])
+def upload_bulk_features(experiment_id):
+    """
+    Allows a researcher to upload a single JSON file to tag all stimuli with feature vectors.
+    Expected JSON format:
+    {
+      "image1.png": [1.0, 0.5, 0.0],
+      "image2.png": [0.0, 1.0, 0.5]
+    }
+    """
+    try:
+        experiment = Experiment.query.filter_by(experiment_id=experiment_id).first()
+        if not experiment:
+            return jsonify({'error': 'Experiment not found'}), 404
 
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file provided'}), 400
+
+        file = request.files['file']
+        if not file or not file.filename.endswith('.json'):
+            return jsonify({'error': 'Please upload a valid .json file'}), 400
+
+        # Parse the uploaded JSON
+        feature_map = json.load(file)
+        
+        # Connect to the experiment's specific settings database
+        settings_db = _get_settings_db_path(experiment)
+        con = _connect_sqlite(settings_db)
+        
+        updated_count = 0
+        try:
+            # Get all current stimuli
+            stimuli = con.execute("SELECT stimulus_id, filename, metadata_json FROM stimuli").fetchall()
+            
+            for stim in stimuli:
+                stim_id = stim["stimulus_id"]
+                filename = stim["filename"]
+                
+                # If the uploaded JSON has a vector for this filename
+                if filename in feature_map:
+                    vector = feature_map[filename]
+                    
+                    # Ensure it's a list of numbers
+                    if isinstance(vector, list):
+                        # Load existing metadata, add the feature vector, and save it back
+                        meta = json.loads(stim["metadata_json"] or "{}")
+                        meta["feature_vector"] = vector
+                        
+                        con.execute(
+                            "UPDATE stimuli SET metadata_json = ? WHERE stimulus_id = ?",
+                            (json.dumps(meta), stim_id)
+                        )
+                        updated_count += 1
+            con.commit()
+        finally:
+            con.close()
+
+        return jsonify({
+            'success': True, 
+            'message': f'Successfully updated {updated_count} stimuli with feature vectors.'
+        })
+
+    except Exception as e:
+        logger.error(f"Error bulk uploading features: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/stimuli/<stimulus_id>/assign_experiment', methods=['PATCH'])
 @require_auth

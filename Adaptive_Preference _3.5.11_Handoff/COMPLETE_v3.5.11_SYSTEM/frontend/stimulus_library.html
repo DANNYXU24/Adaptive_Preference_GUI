@@ -285,6 +285,23 @@
         <h2 style="font-size: 18px;">Upload & Filter</h2>
         <button class="btn" id="uploadBtn">📤 Upload Images</button>
       </div>
+
+      <div class="card mt-4 mb-4 shadow-sm">
+    <div class="card-body">
+        <h5 class="card-title">🤖 Enable Gaussian Process (Feature Vectors)</h5>
+        <p class="card-text text-muted small">
+            Upload a single <code>.json</code> file mapping your image filenames to their numeric feature vectors. This unlocks the true predictive power of the GP.
+        </p>
+        
+        <div class="input-group">
+            <input type="file" class="form-control" id="featureJsonInput" accept=".json">
+            <button class="btn btn-primary" type="button" onclick="uploadFeatureJson()">
+                Apply Vectors
+            </button>
+        </div>
+        <div id="featureUploadStatus" class="mt-2 small"></div>
+    </div>
+</div>
       
       <input type="file" id="fileInput" multiple accept="image/*" style="display: none;">
       
@@ -382,6 +399,60 @@
           alert('Dev login error: ' + err.message);
         }
       }
+
+      async function uploadFeatureJson() {
+        const fileInput = document.getElementById('featureJsonInput');
+        const statusDiv = document.getElementById('featureUploadStatus');
+        
+        if (fileInput.files.length === 0) {
+            statusDiv.innerHTML = '<span class="text-danger">Please select a .json file first.</span>';
+            return;
+        }
+
+        // 1. Get the Experiment ID from the URL (e.g., ?experiment_id=1234)
+        const urlParams = new URLSearchParams(window.location.search);
+        const experimentId = urlParams.get('experiment_id') || urlParams.get('exp'); 
+        
+        if (!experimentId) {
+            alert("Could not find the Experiment ID in the URL.");
+            return;
+        }
+
+        // 2. Prepare the file for upload
+        const formData = new FormData();
+        formData.append("file", fileInput.files[0]);
+
+        // 3. Get the auth token (assuming you store it in localStorage like most setups)
+        const token = localStorage.getItem('access_token');
+
+        statusDiv.innerHTML = '<span class="text-info">Uploading and applying vectors...</span>';
+
+        try {
+            // 4. Send it to your Python API
+            const response = await fetch(`/api/experiments/${experimentId}/stimuli/bulk_features`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`
+                },
+                body: formData
+            });
+
+            const data = await response.json();
+            
+            if (data.success) {
+                statusDiv.innerHTML = `<span class="text-success"><strong>Success!</strong> ${data.message}</span>`;
+                fileInput.value = ""; // Clear the input
+                
+                // Optional: If you have a function that reloads the image grid, call it here!
+                // loadStimuli(); 
+            } else {
+                statusDiv.innerHTML = `<span class="text-danger"><strong>Error:</strong> ${data.error}</span>`;
+            }
+        } catch (error) {
+            console.error("Upload failed", error);
+            statusDiv.innerHTML = `<span class="text-danger"><strong>Network Error:</strong> Check console for details.</span>`;
+        }
+    }
 
       async function loadExperimentsForLibrary() {
         try {
