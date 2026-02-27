@@ -256,17 +256,43 @@ def _stimulus_row_to_dict(row: dict) -> dict:
 
 def build_stimuli_features(stimuli_list):
     """
-    Convert stimuli metadata into a numeric feature matrix X.
-    Using an identity matrix (one-hot encoding) so the GP treats 
-    each anomaly as a distinct, independent discrete item.
+    Dynamically build the feature matrix X.
+    - If stimuli have 'feature_vector' in their metadata, use those for a True GP.
+    - If not, fall back to an identity matrix for discrete independent evaluation.
     """
     n_items = len(stimuli_list)
     
-    # np.eye creates a perfect diagonal matrix where each item 
-    # gets a '1' in its own unique column, and '0' everywhere else.
-    X = np.eye(n_items, dtype=np.float64)
+    # 1. Scan to see if we are in "Feature Mode"
+    feature_dimension = 0
+    use_features = False
     
-    return X
+    for stim in stimuli_list:
+        meta = stim.get('metadata', {})
+        vec = meta.get('feature_vector')
+        
+        # If we find at least one valid feature vector, we switch modes
+        if vec and isinstance(vec, list) and len(vec) > 0:
+            use_features = True
+            feature_dimension = len(vec)
+            break
+            
+    # 2. Build the Matrix
+    if use_features:
+        X = []
+        for stim in stimuli_list:
+            meta = stim.get('metadata', {})
+            vec = meta.get('feature_vector', [])
+            
+            # Ensure all vectors are the same length (pad with 0s if missing)
+            if len(vec) != feature_dimension:
+                vec = [0.0] * feature_dimension
+                
+            X.append(vec)
+        return np.array(X, dtype=np.float64)
+        
+    else:
+        # Fallback: Identity matrix (No generalization, treats items independently)
+        return np.eye(n_items, dtype=np.float64)
 
 def _participant_result_db_path(experiment: 'Experiment', subject_id: str, session_token: str) -> str:
     meta = experiment.experiment_metadata or {}
