@@ -1304,18 +1304,30 @@
                 <div class="example-section">
                     <h2>Choose a Starting Point</h2>
                     <p style="text-align: center; color: var(--gray-700); margin-bottom: 30px;">
-                        Select a template to get started quickly, or create from scratch
+                        Select the type of experiment you want to build
                     </p>
+
+                    <div class="example-grid">
                         
-                        <div class="example-card blank" onclick="loadTemplate('scratch')">
-                            <div class="plus-icon">+</div>
-                            <h3>Start from Scratch</h3>
-                            <p>Create your own custom experiment with full control</p>
-                            <button style="background: var(--gray-700);">Create Custom</button>
+                        <div class="example-card blank"onclick="loadTemplate('scratch')">
+                            <div class="plus-icon">⚖️</div>
+                            <h3>Pairwise Preference Test</h3>
+                            <p>Classic A vs. B testing to find the optimal choice.</p>
+                            <button style="background: var(--primary);">Create Pairwise</button>
                         </div>
+
+                        <div class="example-card blank" onclick="startNewExperiment('triadic')">
+                            <div class="plus-icon">🔺</div>
+                            <h3>Triadic Similarity Test</h3>
+                            <p>Identify the which of Image B or C is more similar to reference Image A.</p>
+                            <button style="background: var(--secondary); border: none;">Create Triadic</button>
+                        </div>
+
                     </div>
                 </div>
             </div>
+            
+
 
             <!-- STEP 2: Upload Images -->
             <div class="content-step" id="content-step-2">
