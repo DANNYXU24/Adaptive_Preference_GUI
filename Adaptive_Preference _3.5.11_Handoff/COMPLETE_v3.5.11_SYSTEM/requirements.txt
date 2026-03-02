@@ -12,7 +12,7 @@ pandas
 alembic
 psycopg2
 gunicorn
-
+salmon-triplets==0.10.0rc5
 # Linting/Testing
 flake8
 bandit

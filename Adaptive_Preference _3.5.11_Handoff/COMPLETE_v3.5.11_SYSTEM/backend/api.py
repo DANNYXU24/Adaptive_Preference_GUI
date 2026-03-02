@@ -1052,12 +1052,15 @@ class AlgorithmState(db.Model):
     session = db.relationship('Session', back_populates='algorithm_state')
 
 class Choice(db.Model):
+
     __tablename__ = 'choices'
 
     choice_id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     session_id = db.Column(db.String(36), db.ForeignKey('sessions.session_id', ondelete='CASCADE'), nullable=False)
 
     trial_number = db.Column(db.Integer, nullable=False)
+
+    reference_stimulus_id = db.Column(db.String(36), nullable=True)
 
     # IMPORTANT: no ForeignKey here because Stimulus lives in core DB
     stimulus_a_id = db.Column(db.String(36), nullable=False)
@@ -1736,7 +1739,7 @@ def update_session_subject(session_token):
 @app.route('/api/sessions/<session_token>/next', methods=['GET'])
 @limiter.limit(NEXT_RATE)
 def get_next_pair(session_token):
-    """Get next stimulus pair using GPro (evaluating features against choice history)."""
+    """Get next stimulus pair using GPro (pairwise) or Salmon (triadic)."""
     try:
         # Parse experiment_id from token
         experiment, storage, result_db_path = _resolve_experiment_for_session(session_token)
@@ -1767,9 +1770,9 @@ def get_next_pair(session_token):
                 mark_session_complete(storage["settings_db"], session_token, completed_at)
                 return jsonify({'complete': True})
 
-            # Fetch the choice history
+            # Fetch the choice history (UPDATED: Added reference_stimulus_id to the query)
             choices = con.execute(
-                "SELECT stimulus_a_id, stimulus_b_id, chosen_stimulus_id FROM choices WHERE session_token = ?", 
+                "SELECT reference_stimulus_id, stimulus_a_id, stimulus_b_id, chosen_stimulus_id FROM choices WHERE session_token = ?", 
                 (session_token,)
             ).fetchall()
         finally:
@@ -1782,111 +1785,203 @@ def get_next_pair(session_token):
 
         stimuli_list = [_stimulus_row_to_dict(r) for r in stim_rows]
         n_items = len(stimuli_list)
-
-        # 1. Map stimuli to indices and build feature matrix X
-        id_to_idx = {str(s['stimulus_id']): idx for idx, s in enumerate(stimuli_list)}
-        X = build_stimuli_features(stimuli_list)
-
-        # 2. Build the M matrix
-        M = []
-        for c in choices:
-            winner_id = str(c['chosen_stimulus_id'])
-            loser_id = str(c['stimulus_a_id']) if winner_id == str(c['stimulus_b_id']) else str(c['stimulus_b_id'])
-            
-            if winner_id in id_to_idx and loser_id in id_to_idx:
-                M.append([id_to_idx[winner_id], id_to_idx[loser_id]])
         
-        M = np.array(M, dtype=np.int32)
+        # Map stimuli to indices
+        id_to_idx = {str(s['stimulus_id']): idx for idx, s in enumerate(stimuli_list)}
+        
+        # Check metadata for experiment type
+        exp_meta = experiment.experiment_metadata or {}
+        exp_type = exp_meta.get('experiment_type', 'pairwise')
 
-        # 3. Select next pair
-        if len(M) == 0:
-            # First trial: pick a random pair
-            i, j = np.random.choice(n_items, 2, replace=False)
+        # ==========================================================
+        # TRIADIC LOGIC (SALMON)
+        # ==========================================================
+        if exp_type == 'triadic':
+            from salmon.triplets.samplers import CKL
+            
+            # 1. Build Salmon Triplet History
+            M_dicts = []
+            for c in choices:
+                head_id = str(c['reference_stimulus_id']) if c['reference_stimulus_id'] else None
+                winner_id = str(c['chosen_stimulus_id'])
+                loser_id = str(c['stimulus_a_id']) if winner_id == str(c['stimulus_b_id']) else str(c['stimulus_b_id'])
+                
+                if head_id and head_id in id_to_idx and winner_id in id_to_idx and loser_id in id_to_idx:
+                    w_idx = id_to_idx[winner_id]
+                    l_idx = id_to_idx[loser_id]
+                    M_dicts.append({
+                        "head": id_to_idx[head_id],
+                        "winner": w_idx,
+                        "left": w_idx,
+                        "right": l_idx
+                    })
+            
+            # 2. Call Salmon's Active Query Selection
+            d = exp_meta.get('embedding_dimension', 2)
+            sampler = CKL(n=n_items, d=d, ident=str(experiment.experiment_id))
+            
+            if len(M_dicts) > 0:
+                sampler.process_answers(M_dicts)
+                
+            # 3. Get next query
+            queries, scores = sampler.get_queries(num=1)
+            if len(queries) > 0:
+                h, i, j = queries[0]  # [head, choice1, choice2]
+            else:
+                h, i, j = np.random.choice(n_items, 3, replace=False)
+                
+            pres_order = 'AB'
+            if experiment.enable_counterbalancing and np.random.rand() > 0.5:
+                i, j = j, i
+                pres_order = 'BA'
+
+            # 4. Format the triplet response
+            pair_token = jwt_issue_pair_token({
+                'session_id': session_token,
+                'session_token': session_token,
+                'trial_number': current_trial + 1,
+                'reference_stimulus_id': str(stimuli_list[h]['stimulus_id']),
+                'stimulus_a_id': str(stimuli_list[i]['stimulus_id']),
+                'stimulus_b_id': str(stimuli_list[j]['stimulus_id']),
+                'presentation_order': pres_order
+            })
+
+            return jsonify({
+                'success': True,
+                'trial_number': current_trial + 1,
+                'reference_stimulus': {
+                    'stimulus_id': stimuli_list[h]['stimulus_id'],
+                    'stimulus_name': stimuli_list[h].get('label') or stimuli_list[h].get('filename'),
+                    'filename': stimuli_list[h].get('filename'),
+                    'url': stimuli_list[h].get('url'),
+                    'mime_type': stimuli_list[h].get('mime_type'),
+                },
+                'stimulus_a': {
+                    'stimulus_id': stimuli_list[i]['stimulus_id'],
+                    'stimulus_name': stimuli_list[i].get('label') or stimuli_list[i].get('filename'),
+                    'filename': stimuli_list[i].get('filename'),
+                    'url': stimuli_list[i].get('url'),
+                    'mime_type': stimuli_list[i].get('mime_type'),
+                },
+                'stimulus_b': {
+                    'stimulus_id': stimuli_list[j]['stimulus_id'],
+                    'stimulus_name': stimuli_list[j].get('label') or stimuli_list[j].get('filename'),
+                    'filename': stimuli_list[j].get('filename'),
+                    'url': stimuli_list[j].get('url'),
+                    'mime_type': stimuli_list[j].get('mime_type'),
+                },
+                'presentation_order': pres_order,
+                'pair_token': pair_token,
+                'show_progress': bool(experiment.show_progress),
+                'progress_percentage': (trials_completed / trials_total * 100) if trials_total > 0 else 0
+            })
+
+        # ==========================================================
+        # PAIRWISE LOGIC (GPRO - EXACTLY AS YOU PROVIDED)
+        # ==========================================================
         else:
-            from GPro.preference import ProbitPreferenceGP
-            from scipy.stats import norm
-            
-            # Fit the GPro model
-            gpr = ProbitPreferenceGP()
-            gpr.fit(X, M)
-            
-            # Predict utility and covariance for all items in the library
-            y_mean, y_cov = gpr.predict(X, return_y_cov=True)
-            
-            max_gain = -np.inf
-            best_pair = (0, 1)
-            
-            # Active Learning: Select the pair with the highest expected information gain
-            for i in range(n_items):
-                for j in range(i + 1, n_items):
-                    mu_diff = y_mean[i] - y_mean[j]
-                    
-                    # Compute variance difference adding epsilon noise
-                    sigma_diff_sq = y_cov[i, i] + y_cov[j, j] - 2 * y_cov[i, j] + (float(experiment.epsilon) ** 2)
-                    sigma_diff = np.sqrt(max(sigma_diff_sq, 1e-9))
-                    
-                    p_i_over_j = norm.cdf(mu_diff / sigma_diff)
-                    
-                    # Information gain entropy formulation
-                    gain = -p_i_over_j * np.log2(p_i_over_j + 1e-10)
-                    gain += -(1 - p_i_over_j) * np.log2(1 - p_i_over_j + 1e-10)
-                    gain *= sigma_diff  # Weight by uncertainty
-                    
-                    if gain > max_gain:
-                        max_gain = gain
-                        best_pair = (i, j)
-            
-            i, j = best_pair
+            # 1. Build feature matrix X
+            X = build_stimuli_features(stimuli_list)
 
-        pair = [stimuli_list[i], stimuli_list[j]]
+            # 2. Build the M matrix
+            M = []
+            for c in choices:
+                winner_id = str(c['chosen_stimulus_id'])
+                loser_id = str(c['stimulus_a_id']) if winner_id == str(c['stimulus_b_id']) else str(c['stimulus_b_id'])
+                
+                if winner_id in id_to_idx and loser_id in id_to_idx:
+                    M.append([id_to_idx[winner_id], id_to_idx[loser_id]])
+            
+            M = np.array(M, dtype=np.int32)
 
-        pres_order = 'AB'
-        if experiment.enable_counterbalancing and np.random.rand() > 0.5:
-            pair = [pair[1], pair[0]]
-            pres_order = 'BA'
+            # 3. Select next pair
+            if len(M) == 0:
+                # First trial: pick a random pair
+                i, j = np.random.choice(n_items, 2, replace=False)
+            else:
+                from GPro.preference import ProbitPreferenceGP
+                from scipy.stats import norm
+                
+                # Fit the GPro model
+                gpr = ProbitPreferenceGP()
+                gpr.fit(X, M)
+                
+                # Predict utility and covariance for all items in the library
+                y_mean, y_cov = gpr.predict(X, return_y_cov=True)
+                
+                max_gain = -np.inf
+                best_pair = (0, 1)
+                
+                # Active Learning: Select the pair with the highest expected information gain
+                for i in range(n_items):
+                    for j in range(i + 1, n_items):
+                        mu_diff = y_mean[i] - y_mean[j]
+                        
+                        # Compute variance difference adding epsilon noise
+                        sigma_diff_sq = y_cov[i, i] + y_cov[j, j] - 2 * y_cov[i, j] + (float(experiment.epsilon) ** 2)
+                        sigma_diff = np.sqrt(max(sigma_diff_sq, 1e-9))
+                        
+                        p_i_over_j = norm.cdf(mu_diff / sigma_diff)
+                        
+                        # Information gain entropy formulation
+                        gain = -p_i_over_j * np.log2(p_i_over_j + 1e-10)
+                        gain += -(1 - p_i_over_j) * np.log2(1 - p_i_over_j + 1e-10)
+                        gain *= sigma_diff  # Weight by uncertainty
+                        
+                        if gain > max_gain:
+                            max_gain = gain
+                            best_pair = (i, j)
+                
+                i, j = best_pair
 
-        # Issue pair token (JWT)
-        pair_token = jwt_issue_pair_token({
-            'session_id': session_token,
-            'session_token': session_token,
-            'trial_number': current_trial + 1,
-            'stimulus_a_id': str(pair[0]['stimulus_id']),
-            'stimulus_b_id': str(pair[1]['stimulus_id']),
-            'presentation_order': pres_order
-        })
+            pair = [stimuli_list[i], stimuli_list[j]]
 
-        return jsonify({
-            'success': True,
-            'trial_number': current_trial + 1,
-            'stimulus_a': {
-                'stimulus_id': pair[0]['stimulus_id'],
-                'stimulus_name': pair[0].get('label') or pair[0].get('filename'),
-                'filename': pair[0].get('filename'),
-                'url': pair[0].get('url'),
-                'mime_type': pair[0].get('mime_type'),
-            },
-            'stimulus_b': {
-                'stimulus_id': pair[1]['stimulus_id'],
-                'stimulus_name': pair[1].get('label') or pair[1].get('filename'),
-                'filename': pair[1].get('filename'),
-                'url': pair[1].get('url'),
-                'mime_type': pair[1].get('mime_type'),
-            },
-            'presentation_order': pres_order,
-            'pair_token': pair_token,
-            'show_progress': bool(experiment.show_progress),
-            'progress_percentage': (trials_completed / trials_total * 100) if trials_total > 0 else 0
-        })
+            pres_order = 'AB'
+            if experiment.enable_counterbalancing and np.random.rand() > 0.5:
+                pair = [pair[1], pair[0]]
+                pres_order = 'BA'
+
+            # Issue pair token (JWT)
+            pair_token = jwt_issue_pair_token({
+                'session_id': session_token,
+                'session_token': session_token,
+                'trial_number': current_trial + 1,
+                'stimulus_a_id': str(pair[0]['stimulus_id']),
+                'stimulus_b_id': str(pair[1]['stimulus_id']),
+                'presentation_order': pres_order
+            })
+
+            return jsonify({
+                'success': True,
+                'trial_number': current_trial + 1,
+                'stimulus_a': {
+                    'stimulus_id': pair[0]['stimulus_id'],
+                    'stimulus_name': pair[0].get('label') or pair[0].get('filename'),
+                    'filename': pair[0].get('filename'),
+                    'url': pair[0].get('url'),
+                    'mime_type': pair[0].get('mime_type'),
+                },
+                'stimulus_b': {
+                    'stimulus_id': pair[1]['stimulus_id'],
+                    'stimulus_name': pair[1].get('label') or pair[1].get('filename'),
+                    'filename': pair[1].get('filename'),
+                    'url': pair[1].get('url'),
+                    'mime_type': pair[1].get('mime_type'),
+                },
+                'presentation_order': pres_order,
+                'pair_token': pair_token,
+                'show_progress': bool(experiment.show_progress),
+                'progress_percentage': (trials_completed / trials_total * 100) if trials_total > 0 else 0
+            })
 
     except Exception as e:
         logger.error(f"Error getting next pair: {e}")
         return jsonify({'error': str(e)}), 500
 
-
 @app.route('/api/sessions/<session_token>/choice', methods=['POST'])
 @limiter.limit(CHOICE_RATE)
 def record_choice(session_token):
-    """Record subject's choice (GPro calculates state dynamically from this log)."""
+    """Record subject's choice (GPro/Salmon calculates state dynamically from this log)."""
     try:
         data = request.get_json() or {}
 
@@ -1907,6 +2002,11 @@ def record_choice(session_token):
             return jsonify({'error': 'pair_token/session mismatch'}), 400
 
         required = ['stimulus_a_id', 'stimulus_b_id', 'chosen_stimulus_id', 'response_time_ms']
+        
+        # ADDED: Require reference_stimulus_id if the frontend passed it (Triadic mode)
+        if 'reference_stimulus_id' in data:
+            required.append('reference_stimulus_id')
+
         for field in required:
             if field not in data:
                 return jsonify({'error': f'Missing field: {field}'}), 400
@@ -1924,18 +2024,19 @@ def record_choice(session_token):
                 return jsonify({'error': 'pair_token/session mismatch'}), 400
 
             updated_at = datetime.utcnow().isoformat()
-
-            # 1. Insert the choice row
+            
+            # 1. Insert the choice row (UPDATED: Added reference_stimulus_id)
             con.execute(
                 """
                 INSERT INTO choices(
-                    session_token, trial_number, stimulus_a_id, stimulus_b_id, chosen_stimulus_id,
+                    session_token, trial_number, reference_stimulus_id, stimulus_a_id, stimulus_b_id, chosen_stimulus_id,
                     response_time_ms, timestamp, presentation_order
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_token,
                     expected_trial,
+                    data.get('reference_stimulus_id'), # Will be None/NULL for pairwise
                     str(data['stimulus_a_id']),
                     str(data['stimulus_b_id']),
                     str(data['chosen_stimulus_id']),

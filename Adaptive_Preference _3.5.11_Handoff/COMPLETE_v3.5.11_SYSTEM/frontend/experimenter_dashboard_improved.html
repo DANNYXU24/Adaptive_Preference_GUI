@@ -2366,6 +2366,8 @@
                 exploration_weight: 0.1,
                 status: 'draft',
                 experiment_metadata: {                    // NEW
+                    experiment_type: state.experimentData.experimentType || 'pairwise',
+                    embedding_dimension: 2, // New default
                     goal_category: state.experimentData.goalCategory,
                     goal_description: state.experimentData.goalDescription,
                     recommended_profile: state.experimentData.recommendation
