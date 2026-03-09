@@ -26,6 +26,21 @@ import base64
 import re
 import sqlite3
 
+# --- SALMON FRONTEND PATCH ---
+# Salmon expects to be a full web server and looks for static HTML/CSS folders.
+# Since we only use its math, the pip package is missing these folders and crashes.
+# This creates the empty dummy folders automatically so it stops complaining!
+try:
+    import importlib.util
+    import os
+    salmon_spec = importlib.util.find_spec('salmon')
+    if salmon_spec and salmon_spec.submodule_search_locations:
+        salmon_dir = salmon_spec.submodule_search_locations[0]
+        os.makedirs(os.path.join(salmon_dir, 'frontend', 'static'), exist_ok=True)
+        os.makedirs(os.path.join(salmon_dir, 'frontend', 'public'), exist_ok=True)
+except Exception:
+    pass
+
 # Per-experiment settings DB + per-participant results DB helpers
 try:
     from backend.experiment_fs import (
@@ -1796,7 +1811,11 @@ def get_next_pair(session_token):
         # ==========================================================
         # TRIADIC LOGIC (SALMON)
         # ==========================================================
+# ==========================================================
+        # TRIADIC LOGIC (SALMON)
+        # ==========================================================
         if exp_type == 'triadic':
+            # EXACT IMPORT PATH
             from salmon.triplets.samplers import CKL
             
             # 1. Build Salmon Triplet History
@@ -1817,14 +1836,18 @@ def get_next_pair(session_token):
                     })
             
             # 2. Call Salmon's Active Query Selection
-            d = exp_meta.get('embedding_dimension', 2)
+            # Wrap dimension in int() to ensure JSON strings don't crash the math
+            d = int(exp_meta.get('embedding_dimension', 2))
             sampler = CKL(n=n_items, d=d, ident=str(experiment.experiment_id))
             
             if len(M_dicts) > 0:
                 sampler.process_answers(M_dicts)
                 
             # 3. Get next query
-            queries, scores = sampler.get_queries(num=1)
+            # Safely capture the return tuple (Salmon >1.0 returns 3 items: queries, scores, meta)
+            query_results = sampler.get_queries(num=1)
+            queries = query_results[0]
+            
             if len(queries) > 0:
                 h, i, j = queries[0]  # [head, choice1, choice2]
             else:
