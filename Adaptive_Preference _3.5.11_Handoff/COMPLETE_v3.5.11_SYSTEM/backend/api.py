@@ -1838,7 +1838,7 @@ def get_next_pair(session_token):
                 b_id = str(c['stimulus_b_id'])
                 loser_id = a_id if winner_id == b_id else b_id
                 
-                # ALWAYS track that these images were shown to prevent repeats (Even TIMEOUTs)
+                # 1. ALWAYS track that these specific 3 images were shown to prevent exact repeats
                 if head_id and head_id in id_to_idx and a_id in id_to_idx and b_id in id_to_idx:
                     h_idx = id_to_idx[head_id]
                     a_idx = id_to_idx[a_id]
@@ -1846,20 +1846,15 @@ def get_next_pair(session_token):
                     asked_triplets.add((h_idx, a_idx, b_idx))
                     asked_triplets.add((h_idx, b_idx, a_idx))
                 
-                # ONLY feed the math if they made a valid choice (Ignore TIMEOUTs)
+                # 2. ONLY feed the math if they made a valid choice (Ignore TIMEOUTs)
                 if head_id and head_id in id_to_idx and winner_id in id_to_idx and loser_id in id_to_idx:
-                    w_idx = id_to_idx[winner_id]
-                    l_idx = id_to_idx[loser_id]
                     M_dicts.append({
                         "head": id_to_idx[head_id],
-                        "winner": w_idx,
-                        "left": w_idx,
-                        "right": l_idx
+                        "winner": id_to_idx[winner_id],
+                        "left": id_to_idx[winner_id],
+                        "right": id_to_idx[loser_id]
                     })
-                    
-                    # Track asked triplets to avoid repeating the exact same trial
-                    asked_triplets.add((h_idx, w_idx, l_idx))
-                    asked_triplets.add((h_idx, l_idx, w_idx))
+
             
             # 2. Call Salmon's Active Query Selection
             # Wrap dimension in int() to ensure JSON strings don't crash the math
