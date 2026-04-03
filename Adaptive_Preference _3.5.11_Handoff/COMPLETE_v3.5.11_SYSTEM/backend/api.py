@@ -125,7 +125,7 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
 _default_upload = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets', 'stimuli')
 app.config['UPLOAD_FOLDER'] = os.environ.get('UPLOAD_FOLDER', _default_upload)
 app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024  # 5MB max file size
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'mp4'}
 
 # Security
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
@@ -672,7 +672,7 @@ def upload_stimulus_library():
                 """,
                 (
                     stimulus_id, filename, file_path,
-                    f"image/{ext}" if ext != "gif" else "image/gif",
+                    "video/mp4" if ext == "mp4" else (f"image/{ext}" if ext != "gif" else "image/gif"),
                     display_order, label,
                     "[]", "{}", datetime.utcnow().isoformat()
                 )

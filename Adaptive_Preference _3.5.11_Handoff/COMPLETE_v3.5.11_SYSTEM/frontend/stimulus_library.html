@@ -303,7 +303,7 @@
     </div>
 </div>
       
-      <input type="file" id="fileInput" multiple accept="image/*" style="display: none;">
+      <input type="file" id="fileInput" multiple accept="image/*,video/mp4" style="display: none;">
       
       <div class="filter-grid">
         <div class="filter-group">
@@ -625,11 +625,21 @@
         card.className = 'stimulus-card';
         card.id = 'stimulus-' + stimulus.stimulus_id;
         
-        var img = document.createElement('img');
-        img.src = stimulus.url;
-        img.alt = stimulus.filename;
-        img.className = 'stimulus-image';
-        card.appendChild(img);
+        // Dynamically create either a Video or Image preview
+        if (stimulus.mime_type && stimulus.mime_type.startsWith('video/')) {
+            var vid = document.createElement('video');
+            vid.src = stimulus.url;
+            vid.className = 'stimulus-image'; // Reusing the image class for perfect grid sizing
+            vid.controls = true;
+            vid.muted = true; // Muted by default so 20 videos don't play sound at once
+            card.appendChild(vid);
+        } else {
+            var img = document.createElement('img');
+            img.src = stimulus.url;
+            img.alt = stimulus.filename;
+            img.className = 'stimulus-image';
+            card.appendChild(img);
+        }
         
         var info = document.createElement('div');
         info.className = 'stimulus-info';

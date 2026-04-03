@@ -308,7 +308,8 @@
             background: #f0fff4;
         }
 
-        .stimulus-option img {
+        .stimulus-option img,
+        .stimulus-option video {
             width: 100%;
             height: 300px;
             object-fit: contain;
@@ -526,8 +527,9 @@
                 gap: 20px;
             }
 
-            .stimulus-option img {
-                height: 250px;
+            /* Apply the mobile height reduction to both the options AND the reference */
+            .stimulus-option img, .stimulus-option video, #imageRef, #videoRef {
+                height: 250px !important;
             }
         }
     </style>
@@ -614,20 +616,23 @@
                 </div>
 
                 <div id="referenceContainer" style="display: none; text-align: center; margin-bottom: 20px; background: #ebf4ff; padding: 20px; border-radius: 12px; border: 2px dashed #4299e1;">
-                    <h3 style="color: #2b6cb0; margin-bottom: 10px; font-size: 1.1em; text-transform: uppercase; letter-spacing: 1px;">Reference Image</h3>
-                    <img id="imageRef" src="" alt="Reference" style="max-height: 220px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); object-fit: contain;">
+                    <h3 style="color: #2b6cb0; margin-bottom: 10px; font-size: 1.1em; text-transform: uppercase; letter-spacing: 1px;">Reference Media</h3>
+                    <img id="imageRef" src="" alt="Reference" style="height: 300px; max-width: 100%; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); object-fit: contain; background: white;">
+                    <video id="videoRef" src="" controls playsinline style="display: none; height: 300px; max-width: 100%; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); object-fit: contain; background: white;"></video>
                 </div>
 
                 <div class="comparison-container">
                     <div class="stimulus-option" id="stimulusA" onclick="selectStimulus('A')">
                         <div class="selection-indicator">✓</div>
                         <img id="imageA" src="" alt="Option A">
+                        <video id="videoA" src="" controls playsinline style="display: none;"></video>
                         <div class="stimulus-label">Option A</div>
                     </div>
 
                     <div class="stimulus-option" id="stimulusB" onclick="selectStimulus('B')">
                         <div class="selection-indicator">✓</div>
                         <img id="imageB" src="" alt="Option B">
+                        <video id="videoB" src="" controls playsinline style="display: none;"></video>
                         <div class="stimulus-label">Option B</div>
                     </div>
                 </div>
@@ -685,6 +690,35 @@ const state = {
 
         // ===== API CONFIGURATION =====
         const API_BASE = 'http://127.0.0.1:5000/api';
+
+        // Helper to swap between Image and Video
+        function displayMedia(stimulus, imgId, vidId) {
+            const imgEl = document.getElementById(imgId);
+            const vidEl = document.getElementById(vidId);
+            
+            if (stimulus.mime_type && stimulus.mime_type.startsWith('video/')) {
+                // Show Video
+                imgEl.style.display = 'none';
+                imgEl.src = ''; 
+                vidEl.style.display = '';
+                vidEl.src = stimulus.url;
+                vidEl.load();
+                
+                // When video finishes, rewind to the beginning so the play button resets
+                vidEl.onended = () => {
+                    vidEl.currentTime = 0;
+                    vidEl.pause();
+                };
+            } else {
+                // Show Image
+                vidEl.style.display = 'none';
+                vidEl.src = '';
+                vidEl.pause();
+                imgEl.style.display = '';
+                imgEl.src = stimulus.url;
+                imgEl.alt = stimulus.stimulus_name || 'Stimulus';
+            }
+        }
 
         // ===== DEMO MODE =====
         function runDemoMode(params) {
@@ -1019,19 +1053,18 @@ const state = {
                     // Update UI
                     if (data.reference_stimulus) {
                         document.getElementById('referenceContainer').style.display = 'block';
-                        document.getElementById('imageRef').src = data.reference_stimulus.url;
+                        displayMedia(data.reference_stimulus, 'imageRef', 'videoRef');
                         document.getElementById('trialHeading').textContent = "Which is more similar?";
-                        document.getElementById('trialSubtext').textContent = "Select the image that is most similar to the reference above.";
+                        document.getElementById('trialSubtext').textContent = "Select the media that is most similar to the reference above.";
                     } else {
                         document.getElementById('referenceContainer').style.display = 'none';
                         document.getElementById('trialHeading').textContent = "Which do you prefer?";
-                        document.getElementById('trialSubtext').textContent = "Click on the image you like better.";
+                        document.getElementById('trialSubtext').textContent = "Click on the option you like better.";
                     }
 
-                    document.getElementById('imageA').src = state.currentPair.stimulusA.url;
-                    document.getElementById('imageB').src = state.currentPair.stimulusB.url;
-                    document.getElementById('imageA').alt = state.currentPair.stimulusA.stimulus_name;
-                    document.getElementById('imageB').alt = state.currentPair.stimulusB.stimulus_name;
+                    // Dynamically render A and B as either Image or Video
+                    displayMedia(state.currentPair.stimulusA, 'imageA', 'videoA');
+                    displayMedia(state.currentPair.stimulusB, 'imageB', 'videoB');
                     // Reset selection
                     document.getElementById('stimulusA').classList.remove('selected');
                     document.getElementById('stimulusB').classList.remove('selected');
