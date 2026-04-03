@@ -1477,7 +1477,7 @@ def upload_stimulus(experiment_id):
                     stimulus_id,
                     filename,
                     file_path,
-                    f"image/{ext}" if ext != "gif" else "image/gif",
+                    "video/mp4" if ext == "mp4" else (f"image/{ext}" if ext != "gif" else "image/gif"),
                     display_order,
                     label,
                     "[]",
@@ -2017,6 +2017,7 @@ def get_next_pair(session_token):
                 pres_order = 'BA'
 
             # Issue pair token (JWT)
+            # 5. Format the pairwise response
             pair_token = jwt_issue_pair_token({
                 'session_id': session_token,
                 'session_token': session_token,
@@ -2034,14 +2035,14 @@ def get_next_pair(session_token):
                     'stimulus_name': pair[0].get('label') or pair[0].get('filename'),
                     'filename': pair[0].get('filename'),
                     'url': pair[0].get('url'),
-                    'mime_type': pair[0].get('mime_type'),
+                    'mime_type': pair[0].get('mime_type')
                 },
                 'stimulus_b': {
                     'stimulus_id': pair[1]['stimulus_id'],
                     'stimulus_name': pair[1].get('label') or pair[1].get('filename'),
                     'filename': pair[1].get('filename'),
                     'url': pair[1].get('url'),
-                    'mime_type': pair[1].get('mime_type'),
+                    'mime_type': pair[1].get('mime_type')
                 },
                 'presentation_order': pres_order,
                 'pair_token': pair_token,
